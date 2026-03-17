@@ -1,6 +1,10 @@
 """
 Async HTTP client for the mediasoup SFU service.
 
+Uses a single persistent httpx.AsyncClient (connection pool) for the lifetime
+of the process. The client is opened in the FastAPI lifespan (main.py) via
+`await sfu.start()` and closed via `await sfu.stop()`.
+
 All methods raise httpx.HTTPStatusError on 4xx/5xx so callers get a clean
 exception that FastAPI can translate into a WebSocket error message.
 
@@ -24,34 +28,52 @@ class MediasoupClient:
             "x-internal-secret": settings.MEDIASOUP_INTERNAL_SECRET,
             "Content-Type": "application/json",
         }
+        # Initialised by start(), closed by stop() — called from lifespan
+        self._client: httpx.AsyncClient | None = None
 
-    # ── internal helper ───────────────────────────────────────────────────────
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async def start(self) -> None:
+        """Open the shared connection pool. Call once at application startup."""
+        self._client = httpx.AsyncClient(
+            base_url=self._base,
+            headers=self._headers,
+            timeout=10.0,
+        )
+
+    async def stop(self) -> None:
+        """Close the connection pool. Call once at application shutdown."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _ensure_started(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise RuntimeError(
+                "MediasoupClient is not started. "
+                "Ensure sfu.start() is called in the FastAPI lifespan."
+            )
+        return self._client
 
     async def _post(self, path: str, body: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{self._base}{path}",
-                json=body or {},
-                headers=self._headers,
-            )
-            r.raise_for_status()
-            return r.json()
+        client = self._ensure_started()
+        r = await client.post(path, json=body or {})
+        r.raise_for_status()
+        return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(
-                f"{self._base}{path}",
-                params=params or {},
-                headers=self._headers,
-            )
-            r.raise_for_status()
-            return r.json()
+        client = self._ensure_started()
+        r = await client.get(path, params=params or {})
+        r.raise_for_status()
+        return r.json()
 
     async def _delete(self, path: str) -> dict:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.delete(f"{self._base}{path}", headers=self._headers)
-            r.raise_for_status()
-            return r.json()
+        client = self._ensure_started()
+        r = await client.delete(path)
+        r.raise_for_status()
+        return r.json()
 
     # ── Public API ────────────────────────────────────────────────────────────
 

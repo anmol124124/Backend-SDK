@@ -19,4 +19,11 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Do NOT use --reload in production.
+# --reload starts an extra watchdog process, is incompatible with --workers,
+# and restarts the server if any file on disk changes.
+#
+# Single worker is intentional: the in-memory ConnectionManager (WebSocket
+# registry) is not shared across processes. To scale horizontally, replace
+# ConnectionManager with a Redis pub/sub backend and then raise --workers.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.mediasoup_client import sfu
 from app.core.rabbitmq import close_rabbitmq, init_rabbitmq
 from app.core.redis_client import close_redis, init_redis
 from app.modules.auth.router import router as auth_router
@@ -17,8 +18,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ── Startup ───────────────────────────────────────────────────────────
     await init_redis()
     await init_rabbitmq()
+    await sfu.start()          # open persistent HTTP connection pool to mediasoup
     yield
     # ── Shutdown ──────────────────────────────────────────────────────────
+    await sfu.stop()
     await close_redis()
     await close_rabbitmq()
 
@@ -33,11 +36,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Middleware ────────────────────────────────────────────────────────────────
-
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Origins are controlled via the CORS_ORIGINS env var (comma-separated).
+# Default is localhost:5173 for local development only.
+# In production set: CORS_ORIGINS=https://app.yourplatform.com
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten in production — use explicit origins
+    allow_origins=settings.CORS_ORIGINS_LIST,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

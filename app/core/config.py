@@ -1,5 +1,14 @@
 from functools import lru_cache
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_KNOWN_INSECURE_DEFAULTS = {
+    'change-this-in-production',
+    'change-this-to-a-very-long-random-secret-key-in-production',
+    'change-this-secret-in-production',
+    '',
+}
 
 
 class Settings(BaseSettings):
@@ -26,9 +35,12 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    REDIS_PASSWORD: str = ""
 
     @property
     def REDIS_URL(self) -> str:
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     # ── RabbitMQ ──────────────────────────────────────────────────────────
@@ -46,13 +58,42 @@ class Settings(BaseSettings):
 
     # ── mediasoup SFU ─────────────────────────────────────────────────────
     MEDIASOUP_URL: str = "http://mediasoup:3000"
-    MEDIASOUP_INTERNAL_SECRET: str = "change-this-secret-in-production"
+    MEDIASOUP_INTERNAL_SECRET: str = ""
 
     # ── JWT ───────────────────────────────────────────────────────────────
-    JWT_SECRET_KEY: str = "change-this-in-production"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ── CORS ──────────────────────────────────────────────────────────────
+    # Comma-separated list of allowed origins.
+    # Example: CORS_ORIGINS=https://app.example.com,https://www.example.com
+    CORS_ORIGINS: str = "http://localhost:5173"
+
+    @property
+    def CORS_ORIGINS_LIST(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    # ── Secret validation ─────────────────────────────────────────────────
+    # Fail at startup if secrets are missing or left as placeholder values.
+    # This prevents deploying with known-insecure defaults.
+    @model_validator(mode='after')
+    def validate_secrets(self) -> 'Settings':
+        errors = []
+        if self.JWT_SECRET_KEY in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "JWT_SECRET_KEY is not set or is a placeholder. "
+                "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if self.MEDIASOUP_INTERNAL_SECRET in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "MEDIASOUP_INTERNAL_SECRET is not set or is a placeholder. "
+                "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        if errors:
+            raise ValueError("Insecure configuration detected:\n  " + "\n  ".join(errors))
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
