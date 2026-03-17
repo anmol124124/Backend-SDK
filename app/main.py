@@ -3,11 +3,13 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.core.mediasoup_client import sfu
-from app.core.rabbitmq import close_rabbitmq, init_rabbitmq
-from app.core.redis_client import close_redis, init_redis
+from app.core.rabbitmq import close_rabbitmq, get_rabbitmq, init_rabbitmq
+from app.core.redis_client import close_redis, get_redis, init_redis
 from app.modules.auth.router import router as auth_router
 from app.modules.meeting.router import router as meeting_router
 from app.modules.meeting.websocket import router as signaling_router
@@ -59,10 +61,37 @@ app.include_router(signaling_router)  # WebSocket — no /api/v1 prefix, uses /w
 
 # ── Health check ──────────────────────────────────────────────────────────────
 
-@app.get("/health", tags=["Health"], summary="Liveness probe")
+@app.get("/health", tags=["Health"], summary="Deep health check — DB, Redis, RabbitMQ")
 async def health_check() -> dict:
+    checks = {}
+
+    # Postgres
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as e:
+        checks["postgres"] = f"error: {e}"
+
+    # Redis
+    try:
+        await get_redis().ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+
+    # RabbitMQ
+    try:
+        conn = get_rabbitmq()
+        checks["rabbitmq"] = "ok" if not conn.is_closed else "error: connection closed"
+    except Exception as e:
+        checks["rabbitmq"] = f"error: {e}"
+
+    overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
+
     return {
-        "status": "healthy",
+        "status": overall,
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "checks": checks,
     }
