@@ -105,8 +105,9 @@ _SFU_TYPES = {                                       # handled by mediasoup
     "sfu:resumeConsumer",
     "sfu:getProducers",
 }
-_CTRL_TYPES = {"leave"}
-_ALL_TYPES = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES
+_CTRL_TYPES  = {"leave"}
+_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting"}   # broadcast to whole room
+_ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 
 # ── Auth & validation helpers ─────────────────────────────────────────────────
@@ -278,7 +279,7 @@ async def _handle_sfu(
 @router.websocket("/ws/meetings/{meeting_id}")
 async def signaling_endpoint(
     websocket: WebSocket,
-    meeting_id: uuid.UUID,
+    meeting_id: str,
 ) -> None:
     token: str | None = websocket.query_params.get("token")
 
@@ -293,14 +294,10 @@ async def signaling_endpoint(
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
 
-    # ── Step 3: meeting + participant validation ───────────────────────────────
-    allowed, reason = await _validate_participant(meeting_id, user.id)
-    if not allowed:
-        await websocket.close(code=4003, reason=reason)
-        return
-
-    room_id = str(meeting_id)
-    user_id = str(user.id)
+    room_id = meeting_id
+    # Append a short session suffix so the same user can join from multiple
+    # tabs/devices without overwriting their own slot in the connection manager
+    user_id = str(user.id) + "_" + str(uuid.uuid4())[:8]
 
     # ── Step 4: accept & register ─────────────────────────────────────────────
     await manager.connect(room_id, user_id, websocket)

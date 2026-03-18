@@ -1,8 +1,11 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.core.config import settings
@@ -50,6 +53,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Static files ──────────────────────────────────────────────────────────────
+_PUBLIC_DIR = Path(__file__).parent.parent / "public"
+app.mount("/public", StaticFiles(directory=_PUBLIC_DIR), name="public")
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 
 API_PREFIX = "/api/v1"
@@ -57,6 +64,43 @@ API_PREFIX = "/api/v1"
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(meeting_router, prefix=API_PREFIX)
 app.include_router(signaling_router)  # WebSocket — no /api/v1 prefix, uses /ws/meetings/{id}
+
+
+# ── Meeting page ──────────────────────────────────────────────────────────────
+# Served inside an iframe from the client.
+# Token is read from ?token= query param and passed to WebRTCMeetingAPI.
+
+@app.get("/meet/{room_id}", response_class=HTMLResponse, tags=["Meeting UI"])
+async def meeting_page(room_id: str) -> HTMLResponse:
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="/public/js/app.js"></script>
+  <style>
+    html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}
+  </style>
+</head>
+<body>
+  <div id="meeting-container"></div>
+  <script>
+    const params   = new URLSearchParams(window.location.search);
+    const token    = params.get("token") || "";
+    const roomName = "{room_id}";
+
+    window.onload = () => {{
+      new WebRTCMeetingAPI({{
+        serverUrl:  window.location.origin.replace("http", "ws"),
+        roomName:   roomName,
+        token:      token,
+        parentNode: document.querySelector("#meeting-container"),
+      }});
+    }};
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
