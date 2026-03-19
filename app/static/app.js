@@ -4,7 +4,22 @@
 class WebRTCMeetingAPI {
 
   constructor({ serverUrl, roomName, token = "", parentNode }) {
-    this.serverUrl  = serverUrl;
+    // Derive backend URL from this script's own <script src> tag.
+    // This makes the embed HTML portable — no hardcoded URLs needed.
+    const scriptEl = Array.from(document.querySelectorAll('script[src]'))
+      .find(s => s.src && s.src.includes('/public/js/app.js'));
+    const scriptOrigin = scriptEl ? new URL(scriptEl.src).origin : null;
+
+    // Priority: script tag origin → serverUrl param → page origin
+    if (scriptOrigin) {
+      this._httpBase = scriptOrigin;
+    } else if (serverUrl) {
+      this._httpBase = serverUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
+    } else {
+      this._httpBase = window.location.origin;
+    }
+    this.serverUrl = this._httpBase.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+
     this.roomName   = roomName;
     this.token      = token;
     this.parentNode = parentNode;
@@ -57,7 +72,26 @@ class WebRTCMeetingAPI {
       ],
     };
 
-    this._buildLobby();
+    this._init();
+  }
+
+  _init() {
+    fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
+      .then(res => {
+        if (!res.ok) { this._showAccessDenied(); return; }
+        this._buildLobby();
+      })
+      .catch(() => this._showAccessDenied());
+  }
+
+  _showAccessDenied() {
+    this.parentNode.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;background:#202124;';
+    this.parentNode.innerHTML =
+      '<div style="text-align:center;padding:40px;background:#2d2e31;border:1px solid #3c3f45;border-radius:16px;max-width:380px;font-family:sans-serif">' +
+        '<div style="font-size:48px;margin-bottom:16px">\uD83D\uDEAB</div>' +
+        '<h2 style="color:#e8eaed;font-size:18px;margin:0 0 8px;font-weight:500">Access Denied</h2>' +
+        '<p style="color:#9aa0a6;font-size:14px;margin:0">You are not authorized to access this meeting from this domain.</p>' +
+      '</div>';
   }
 
   // ═══════════════════════════════════════════════════════════════════════

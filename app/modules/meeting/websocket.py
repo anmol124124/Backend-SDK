@@ -90,6 +90,7 @@ from app.core.security import decode_token
 from app.modules.auth.models import User
 from app.modules.meeting.connection_manager import manager
 from app.modules.meeting.models import Meeting, Participant
+from app.modules.project.embed_check import check_embed_domain
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Signaling"])
@@ -112,7 +113,7 @@ _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 # ── Auth & validation helpers ─────────────────────────────────────────────────
 
-async def _get_user_from_token(token: str) -> User | None:
+async def _get_user_from_token(token: str, origin: str | None = None) -> User | None:
     try:
         payload = decode_token(token)
     except JWTError:
@@ -128,6 +129,11 @@ async def _get_user_from_token(token: str) -> User | None:
     try:
         user_id = uuid.UUID(raw_id)
     except ValueError:
+        return None
+
+    # Check domain allowlist for embed tokens
+    if not await check_embed_domain(token, origin or ""):
+        logger.warning("Domain blocked  origin=%s", origin)
         return None
 
     async with AsyncSessionLocal() as db:
@@ -282,6 +288,7 @@ async def signaling_endpoint(
     meeting_id: str,
 ) -> None:
     token: str | None = websocket.query_params.get("token")
+    origin: str | None = websocket.headers.get("origin")
 
     # ── Step 1: token present ─────────────────────────────────────────────────
     if not token:
@@ -289,7 +296,7 @@ async def signaling_endpoint(
         return
 
     # ── Step 2: authenticate ──────────────────────────────────────────────────
-    user = await _get_user_from_token(token)
+    user = await _get_user_from_token(token, origin)
     if user is None:
         await websocket.close(code=4001, reason="Invalid or expired token")
         return

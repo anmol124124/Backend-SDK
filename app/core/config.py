@@ -67,13 +67,21 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # ── CORS ──────────────────────────────────────────────────────────────
-    # Comma-separated list of allowed origins.
-    # Example: CORS_ORIGINS=https://app.example.com,https://www.example.com
-    CORS_ORIGINS: str = "http://localhost:5173"
+    # Allow all origins — security is enforced via the domain allowlist in DB.
+    # Customers embed the HTML on their own domains so we cannot predict origins.
+    CORS_ORIGINS: str = "*"
 
     @property
     def CORS_ORIGINS_LIST(self) -> list[str]:
+        if self.CORS_ORIGINS.strip() == "*":
+            return ["*"]
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    # ── Backend public URL ────────────────────────────────────────────────
+    # The externally reachable URL of this backend (no trailing slash).
+    # Set this to your ngrok/production URL.
+    # Example: BACKEND_PUBLIC_URL=https://septimal-irving-realistic.ngrok-free.dev
+    BACKEND_PUBLIC_URL: str = "http://localhost:8000"
 
     # ── Secret validation ─────────────────────────────────────────────────
     # Fail at startup if secrets are missing or left as placeholder values.

@@ -1,4 +1,104 @@
-class WebRTCMeetingAPI{constructor({serverUrl:e,roomName:t,token:i="",parentNode:a}){this.serverUrl=e,this.roomName=t,this.token=i,this.parentNode=a,this._ws=null,this._localStream=null,this._peerConnections={},this._pendingCandidates={},this._micEnabled=!0,this._camEnabled=!0,this._isSharing=!1,this._shareStream=null,this._isRecording=!1,this._mediaRecorder=null,this._recordChunks=[],this._chatOpen=!1,this._unread=0,this._handRaised=!1,this._raisedHands=new Set,this._audioCtx=null,this._analysers={},this._speakerTimer=null,this._currentSpeaker=null,this._myName="",this._peerNames={},this._participants={},this._panelTab=null,this._clockTimer=null,this._toastTimer=null,this._iceConfig={iceServers:[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}]},this._buildLobby()}_buildLobby(){this.parentNode.innerHTML=`
+// ═══════════════════════════════════════════════════════════════════════════
+// WebRTCMeetingAPI — embeddable WebRTC meeting SDK
+// ═══════════════════════════════════════════════════════════════════════════
+class WebRTCMeetingAPI {
+
+  constructor({ serverUrl, roomName, token = "", parentNode }) {
+    // Derive backend URL from this script's own <script src> tag.
+    // This makes the embed HTML portable — no hardcoded URLs needed.
+    const scriptEl = Array.from(document.querySelectorAll('script[src]'))
+      .find(s => s.src && s.src.includes('/public/js/app.js'));
+    const scriptOrigin = scriptEl ? new URL(scriptEl.src).origin : null;
+
+    // Priority: script tag origin → serverUrl param → page origin
+    if (scriptOrigin) {
+      this._httpBase = scriptOrigin;
+    } else if (serverUrl) {
+      this._httpBase = serverUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
+    } else {
+      this._httpBase = window.location.origin;
+    }
+    this.serverUrl = this._httpBase.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+
+    this.roomName   = roomName;
+    this.token      = token;
+    this.parentNode = parentNode;
+
+    // WebRTC state
+    this._ws                = null;
+    this._localStream       = null;
+    this._peerConnections   = {};
+    this._pendingCandidates = {};
+
+    // Media toggles
+    this._micEnabled  = true;
+    this._camEnabled  = true;
+    this._isSharing   = false;
+    this._shareStream = null;
+
+    // Recording
+    this._isRecording   = false;
+    this._mediaRecorder = null;
+    this._recordChunks  = [];
+
+    // Chat
+    this._chatOpen    = false;
+    this._unread      = 0;
+
+    // Raise hand
+    this._handRaised  = false;
+    this._raisedHands = new Set();
+
+    // Active speaker
+    this._audioCtx      = null;
+    this._analysers     = {};   // userId → AnalyserNode
+    this._speakerTimer  = null;
+    this._currentSpeaker = null;
+
+    // Names & participants
+    this._myName        = "";
+    this._peerNames     = {};   // userId → display name
+    this._participants  = {};   // userId → name (everyone in room)
+    this._panelTab      = null; // "people" | "chat" | null
+
+    // Misc
+    this._clockTimer  = null;
+    this._toastTimer  = null;
+
+    this._iceConfig = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    };
+
+    this._init();
+  }
+
+  _init() {
+    fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
+      .then(res => {
+        if (!res.ok) { this._showAccessDenied(); return; }
+        this._buildLobby();
+      })
+      .catch(() => this._showAccessDenied());
+  }
+
+  _showAccessDenied() {
+    this.parentNode.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;background:#202124;';
+    this.parentNode.innerHTML =
+      '<div style="text-align:center;padding:40px;background:#2d2e31;border:1px solid #3c3f45;border-radius:16px;max-width:380px;font-family:sans-serif">' +
+        '<div style="font-size:48px;margin-bottom:16px">\uD83D\uDEAB</div>' +
+        '<h2 style="color:#e8eaed;font-size:18px;margin:0 0 8px;font-weight:500">Access Denied</h2>' +
+        '<p style="color:#9aa0a6;font-size:14px;margin:0">You are not authorized to access this meeting from this domain.</p>' +
+      '</div>';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // LOBBY (pre-join screen)
+  // ═══════════════════════════════════════════════════════════════════════
+  _buildLobby() {
+    this.parentNode.innerHTML = `
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap');
       .wrtc-lobby*{box-sizing:border-box;margin:0;padding:0}
@@ -145,7 +245,86 @@ class WebRTCMeetingAPI{constructor({serverUrl:e,roomName:t,token:i="",parentNode
           <button class="wrtc-join-btn" id="wrtc-join-btn" disabled>Join now</button>
         </div>
       </div>
-    </div>`,document.getElementById("wrtc-lobby-room-name").textContent=this.roomName;let t=document.getElementById("wrtc-name-input"),i=document.getElementById("wrtc-join-btn");t.addEventListener("input",()=>{i.disabled=0===t.value.trim().length}),t.addEventListener("keydown",e=>{"Enter"!==e.key||i.disabled||i.click()}),i.addEventListener("click",()=>{var e=t.value.trim();e&&this._joinMeeting(e)}),document.getElementById("wrtc-lobby-mic").addEventListener("click",()=>{this._micEnabled=!this._micEnabled,this._localStream?.getAudioTracks().forEach(e=>{e.enabled=this._micEnabled}),document.getElementById("wrtc-lobby-mic").classList.toggle("muted",!this._micEnabled),document.getElementById("wrtc-lobby-mic-on").style.display=this._micEnabled?"":"none",document.getElementById("wrtc-lobby-mic-off").style.display=this._micEnabled?"none":""}),document.getElementById("wrtc-lobby-cam").addEventListener("click",()=>{this._camEnabled=!this._camEnabled,this._localStream?.getVideoTracks().forEach(e=>{e.enabled=this._camEnabled}),document.getElementById("wrtc-lobby-cam").classList.toggle("muted",!this._camEnabled),document.getElementById("wrtc-lobby-cam-on").style.display=this._camEnabled?"":"none",document.getElementById("wrtc-lobby-cam-icon-off").style.display=this._camEnabled?"none":"",document.getElementById("wrtc-lobby-video").style.display=this._camEnabled?"block":"none",document.getElementById("wrtc-lobby-cam-off").style.display=this._camEnabled?"none":"flex"}),this._initPreview()}async _initPreview(){try{this._localStream=await navigator.mediaDevices.getUserMedia({video:!0,audio:!0}),document.getElementById("wrtc-lobby-video").srcObject=this._localStream}catch(e){this._log("Preview camera failed: "+e.message,void 0,"warn"),document.getElementById("wrtc-lobby-cam-off").style.display="flex",document.getElementById("wrtc-lobby-video").style.display="none"}}_joinMeeting(e){this._myName=e,this._buildUI();e=document.getElementById("wrtc-local-video");e&&(e.srcObject=this._localStream),this._camEnabled||(document.getElementById("wrtc-local-video").style.display="none",document.getElementById("wrtc-pip-avatar").style.display="flex",document.getElementById("wrtc-btn-cam").classList.add("muted"),document.getElementById("wrtc-ico-cam").style.display="none",document.getElementById("wrtc-ico-cam-off").style.display=""),this._micEnabled||(document.getElementById("wrtc-btn-mic").classList.add("muted"),document.getElementById("wrtc-ico-mic").style.display="none",document.getElementById("wrtc-ico-mic-off").style.display=""),this._setupAudioAnalyser("local",this._localStream),this._setupWebSocket(),this._startSpeakerDetection()}_buildUI(){this.parentNode.innerHTML=`
+    </div>`;
+
+    document.getElementById("wrtc-lobby-room-name").textContent = this.roomName;
+
+    // Enable Join only when name is non-empty
+    const nameInput = document.getElementById("wrtc-name-input");
+    const joinBtn   = document.getElementById("wrtc-join-btn");
+    nameInput.addEventListener("input", () => {
+      joinBtn.disabled = nameInput.value.trim().length === 0;
+    });
+    nameInput.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !joinBtn.disabled) joinBtn.click();
+    });
+    joinBtn.addEventListener("click", () => {
+      const name = nameInput.value.trim();
+      if (name) this._joinMeeting(name);
+    });
+
+    // Lobby mic/cam toggles (use same state vars)
+    document.getElementById("wrtc-lobby-mic").addEventListener("click", () => {
+      this._micEnabled = !this._micEnabled;
+      this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
+      document.getElementById("wrtc-lobby-mic").classList.toggle("muted", !this._micEnabled);
+      document.getElementById("wrtc-lobby-mic-on").style.display  = this._micEnabled ? "" : "none";
+      document.getElementById("wrtc-lobby-mic-off").style.display = this._micEnabled ? "none" : "";
+    });
+    document.getElementById("wrtc-lobby-cam").addEventListener("click", () => {
+      this._camEnabled = !this._camEnabled;
+      this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
+      document.getElementById("wrtc-lobby-cam").classList.toggle("muted", !this._camEnabled);
+      document.getElementById("wrtc-lobby-cam-on").style.display       = this._camEnabled ? "" : "none";
+      document.getElementById("wrtc-lobby-cam-icon-off").style.display = this._camEnabled ? "none" : "";
+      document.getElementById("wrtc-lobby-video").style.display        = this._camEnabled ? "block" : "none";
+      document.getElementById("wrtc-lobby-cam-off").style.display      = this._camEnabled ? "none"  : "flex";
+    });
+
+    // Start camera preview
+    this._initPreview();
+  }
+
+  async _initPreview() {
+    try {
+      this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      document.getElementById("wrtc-lobby-video").srcObject = this._localStream;
+    } catch (err) {
+      this._log("Preview camera failed: " + err.message, undefined, "warn");
+      document.getElementById("wrtc-lobby-cam-off").style.display = "flex";
+      document.getElementById("wrtc-lobby-video").style.display   = "none";
+    }
+  }
+
+  _joinMeeting(name) {
+    this._myName = name;
+    this._buildUI();
+    // Reattach local stream to the meeting PiP
+    const localVid = document.getElementById("wrtc-local-video");
+    if (localVid) localVid.srcObject = this._localStream;
+    // Sync mic/cam state from lobby toggles
+    if (!this._camEnabled) {
+      document.getElementById("wrtc-local-video").style.display = "none";
+      document.getElementById("wrtc-pip-avatar").style.display  = "flex";
+      document.getElementById("wrtc-btn-cam").classList.add("muted");
+      document.getElementById("wrtc-ico-cam").style.display     = "none";
+      document.getElementById("wrtc-ico-cam-off").style.display = "";
+    }
+    if (!this._micEnabled) {
+      document.getElementById("wrtc-btn-mic").classList.add("muted");
+      document.getElementById("wrtc-ico-mic").style.display     = "none";
+      document.getElementById("wrtc-ico-mic-off").style.display = "";
+    }
+    this._setupAudioAnalyser("local", this._localStream);
+    this._setupWebSocket();
+    this._startSpeakerDetection();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // BUILD UI
+  // ═══════════════════════════════════════════════════════════════════════
+  _buildUI() {
+    this.parentNode.innerHTML = `
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&display=swap');
       .wrtc *,.wrtc *::before,.wrtc *::after{box-sizing:border-box;margin:0;padding:0}
@@ -685,12 +864,825 @@ class WebRTCMeetingAPI{constructor({serverUrl:e,roomName:t,token:i="",parentNode
       </div>
 
       <div class="wrtc-toast" id="wrtc-toast"></div>
-    </div>`,document.getElementById("wrtc-room-name").textContent=this.roomName,document.getElementById("wrtc-room-hint").textContent=this.roomName,document.getElementById("wrtc-pip-label").textContent=this._myName||"You",document.getElementById("wrtc-pip-avatar-text").textContent=this._myName?this._myName.slice(0,2).toUpperCase():"YO",document.getElementById("wrtc-btn-leave").addEventListener("click",()=>this.hangup()),document.getElementById("wrtc-btn-mic").addEventListener("click",()=>this._toggleMic()),document.getElementById("wrtc-btn-cam").addEventListener("click",()=>this._toggleCam()),document.getElementById("wrtc-btn-share").addEventListener("click",()=>this._toggleScreenShare()),document.getElementById("wrtc-btn-rec").addEventListener("click",()=>this._toggleRecording()),document.getElementById("wrtc-btn-hand").addEventListener("click",()=>this._toggleHand()),document.getElementById("wrtc-btn-people").addEventListener("click",()=>this._togglePanel("people")),document.getElementById("wrtc-btn-chat").addEventListener("click",()=>this._togglePanel("chat")),document.getElementById("wrtc-tab-people").addEventListener("click",()=>this._switchTab("people")),document.getElementById("wrtc-tab-chat").addEventListener("click",()=>this._switchTab("chat")),document.getElementById("wrtc-panel-close").addEventListener("click",()=>this._closePanel()),document.getElementById("wrtc-chat-send").addEventListener("click",()=>this._sendChat()),document.getElementById("wrtc-chat-input").addEventListener("keydown",e=>{"Enter"!==e.key||e.shiftKey||(e.preventDefault(),this._sendChat())}),this._startClock()}_startClock(){var e=()=>{var e=document.getElementById("wrtc-clock");e&&(e.textContent=(new Date).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}))};e(),this._clockTimer=setInterval(e,15e3)}_toggleMic(){this._micEnabled=!this._micEnabled,this._localStream?.getAudioTracks().forEach(e=>{e.enabled=this._micEnabled}),document.getElementById("wrtc-btn-mic").classList.toggle("muted",!this._micEnabled),document.getElementById("wrtc-ico-mic").style.display=this._micEnabled?"":"none",document.getElementById("wrtc-ico-mic-off").style.display=this._micEnabled?"none":"",this._toast(this._micEnabled?"Microphone on":"Microphone muted")}_toggleCam(){this._camEnabled=!this._camEnabled,this._localStream?.getVideoTracks().forEach(e=>{e.enabled=this._camEnabled}),document.getElementById("wrtc-btn-cam").classList.toggle("muted",!this._camEnabled),document.getElementById("wrtc-ico-cam").style.display=this._camEnabled?"":"none",document.getElementById("wrtc-ico-cam-off").style.display=this._camEnabled?"none":"",document.getElementById("wrtc-local-video").style.display=this._camEnabled?"block":"none",document.getElementById("wrtc-pip-avatar").style.display=this._camEnabled?"none":"flex",this._toast(this._camEnabled?"Camera on":"Camera off")}async _toggleScreenShare(){if(this._isSharing)this._shareStream?.getTracks().forEach(e=>e.stop()),this._shareStream=null,this._isSharing=!1,await this._restoreCameraTrack(),document.getElementById("wrtc-btn-share").classList.remove("on-air"),document.getElementById("wrtc-ico-share").style.display="",document.getElementById("wrtc-ico-share-stop").style.display="none",document.getElementById("wrtc-local-video").srcObject=this._localStream,this._clearPresenter(),this._sendWS({type:"presenting",payload:{active:!1}}),this._toast("Screen sharing stopped");else try{this._shareStream=await navigator.mediaDevices.getDisplayMedia({video:!0,audio:!0}),this._isSharing=!0;var e=this._shareStream.getVideoTracks()[0];e.onended=()=>{this._isSharing&&this._toggleScreenShare()},await this._replaceVideoTrack(e),document.getElementById("wrtc-btn-share").classList.add("on-air"),document.getElementById("wrtc-ico-share").style.display="none",document.getElementById("wrtc-ico-share-stop").style.display="",this._setLocalPresenter(),this._sendWS({type:"presenting",payload:{active:!0}}),this._toast("You are now presenting")}catch(e){"NotAllowedError"!==e.name&&this._toast("Screen share failed"),this._log("Screen share error: "+e.message,void 0,"error")}}_setPresenter(t){var e=document.getElementById("wrtc-stage");let i=document.getElementById("wrtc-thumbs");e?.classList.add("presenting"),i.innerHTML="",document.querySelectorAll(".wrtc-tile").forEach(e=>{e.id==="wrtc-tile-"+t?e.classList.add("presenter"):(this._addThumb(e,i),e.style.display="none")})}_setLocalPresenter(){var e=document.getElementById("wrtc-stage");let t=document.getElementById("wrtc-thumbs");var i=document.getElementById("wrtc-grid"),e=(e?.classList.add("presenting"),t.innerHTML="",document.createElement("div")),a=(e.id="wrtc-local-share-tile",e.className="wrtc-tile presenter",document.createElement("video")),r=(a.autoplay=!0,a.playsInline=!0,a.muted=!0,a.srcObject=this._shareStream,document.createElement("div")),n=(r.className="wrtc-presenter-badge",r.textContent="You are presenting",document.createElement("div"));n.className="wrtc-tile-label",n.textContent=this._myName||"You",e.append(a,r,n),i.appendChild(e),document.querySelectorAll(".wrtc-tile:not(#wrtc-local-share-tile)").forEach(e=>{this._addThumb(e,t),e.style.display="none"}),document.getElementById("wrtc-local-video").srcObject=this._localStream}_addThumb(e,t){var i,a,r=e.querySelector("video");r&&((i=document.createElement("div")).className="wrtc-thumb-tile",(a=document.createElement("video")).autoplay=!0,a.playsInline=!0,a.muted=!0,a.srcObject=r.srcObject,(r=document.createElement("div")).className="wrtc-thumb-label",r.textContent=e.querySelector(".wrtc-tile-label")?.textContent||"",i.append(a,r),t.appendChild(i))}_clearPresenter(){document.getElementById("wrtc-local-share-tile")?.remove(),document.getElementById("wrtc-stage")?.classList.remove("presenting"),document.getElementById("wrtc-thumbs").innerHTML="",document.querySelectorAll(".wrtc-tile").forEach(e=>{e.classList.remove("presenter"),e.style.display=""}),this._updateGrid()}async _replaceVideoTrack(e){for(var t of Object.values(this._peerConnections)){t=t.getSenders().find(e=>"video"===e.track?.kind);t&&await t.replaceTrack(e)}}async _restoreCameraTrack(){var e=this._localStream?.getVideoTracks()[0];e&&await this._replaceVideoTrack(e)}_toggleRecording(){if(this._isRecording)this._mediaRecorder?.stop(),this._isRecording=!1,document.getElementById("wrtc-btn-rec").classList.remove("active-feature"),document.getElementById("wrtc-rec-badge").classList.remove("active"),document.getElementById("wrtc-rec-circle").setAttribute("fill","currentColor"),this._toast("Recording saved");else{var e=this._isSharing?this._shareStream:this._localStream;if(e){let t=["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"].find(e=>MediaRecorder.isTypeSupported(e))||"";this._recordChunks=[],this._mediaRecorder=new MediaRecorder(e,t?{mimeType:t}:{}),this._mediaRecorder.ondataavailable=e=>{0<e.data.size&&this._recordChunks.push(e.data)},this._mediaRecorder.onstop=()=>{var e=new Blob(this._recordChunks,{type:t||"video/webm"}),e=URL.createObjectURL(e);Object.assign(document.createElement("a"),{href:e,download:`meeting-${Date.now()}.webm`}).click(),URL.revokeObjectURL(e)},this._mediaRecorder.start(1e3),this._isRecording=!0,document.getElementById("wrtc-btn-rec").classList.add("active-feature"),document.getElementById("wrtc-rec-badge").classList.add("active"),document.getElementById("wrtc-rec-circle").setAttribute("fill","#fff"),this._toast("Recording started")}else this._toast("No stream to record")}}_togglePanel(e){this._panelTab===e?this._closePanel():(this._panelTab=e,document.getElementById("wrtc-side-panel").classList.add("open"),document.getElementById("wrtc-stage").classList.add("panel-open"),document.getElementById("wrtc-btn-people").classList.toggle("on-air","people"===e),document.getElementById("wrtc-btn-chat").classList.toggle("on-air","chat"===e),this._switchTab(e))}_switchTab(e){this._panelTab=e,document.getElementById("wrtc-tab-people").classList.toggle("active","people"===e),document.getElementById("wrtc-tab-chat").classList.toggle("active","chat"===e),document.getElementById("wrtc-people-content").style.display="people"===e?"flex":"none",document.getElementById("wrtc-chat-content").style.display="chat"===e?"flex":"none","chat"===e&&(this._unread=0,document.getElementById("wrtc-chat-badge").classList.remove("show"),document.getElementById("wrtc-chat-badge-btn").classList.remove("show"),setTimeout(()=>document.getElementById("wrtc-chat-input")?.focus(),260))}_closePanel(){this._panelTab=null,document.getElementById("wrtc-side-panel").classList.remove("open"),document.getElementById("wrtc-stage").classList.remove("panel-open"),document.getElementById("wrtc-btn-people").classList.remove("on-air"),document.getElementById("wrtc-btn-chat").classList.remove("on-air")}_addParticipant(e,t){this._participants[e]=t,this._renderParticipants()}_removeParticipant(e){delete this._participants[e],this._renderParticipants()}_renderParticipants(){let i=document.getElementById("wrtc-people-list");var e,t;i&&(e=Object.keys(this._participants).length+1,(t=document.getElementById("wrtc-people-count"))&&(t.textContent=e),this._updateUserCount(e),i.innerHTML="",t=this._makePersonEl("local",this._myName||"You",!0),i.appendChild(t),Object.entries(this._participants).forEach(([e,t])=>{i.appendChild(this._makePersonEl(e,t,!1))}))}_makePersonEl(e,t,i){var a=document.createElement("div"),r=(a.className="wrtc-person",document.createElement("div")),e=(r.className="wrtc-person-avatar",r.style.background=this._colorFromId(e),r.textContent=t.slice(0,2).toUpperCase(),document.createElement("div")),n=(e.className="wrtc-person-info",document.createElement("div")),t=(n.className="wrtc-person-name",n.textContent=t,i&&((t=document.createElement("span")).className="wrtc-you-tag",t.textContent="(you)",n.appendChild(t)),e.appendChild(n),document.createElement("div"));return t.className="wrtc-person-icons",i&&!this._micEnabled&&(t.innerHTML+=`<span class="wrtc-person-icon muted" title="Muted">
+    </div>`;
+
+    // Wire up static elements
+    document.getElementById("wrtc-room-name").textContent      = this.roomName;
+    document.getElementById("wrtc-room-hint").textContent      = this.roomName;
+    document.getElementById("wrtc-pip-label").textContent      = this._myName || "You";
+    document.getElementById("wrtc-pip-avatar-text").textContent = this._myName
+      ? this._myName.slice(0, 2).toUpperCase() : "YO";
+    document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
+    document.getElementById("wrtc-btn-mic").addEventListener("click",   () => this._toggleMic());
+    document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
+    document.getElementById("wrtc-btn-share").addEventListener("click", () => this._toggleScreenShare());
+    document.getElementById("wrtc-btn-rec").addEventListener("click",   () => this._toggleRecording());
+    document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
+    document.getElementById("wrtc-btn-people").addEventListener("click", () => this._togglePanel("people"));
+    document.getElementById("wrtc-btn-chat").addEventListener("click",   () => this._togglePanel("chat"));
+    document.getElementById("wrtc-tab-people").addEventListener("click", () => this._switchTab("people"));
+    document.getElementById("wrtc-tab-chat").addEventListener("click",   () => this._switchTab("chat"));
+    document.getElementById("wrtc-panel-close").addEventListener("click",() => this._closePanel());
+    document.getElementById("wrtc-chat-send").addEventListener("click",  () => this._sendChat());
+    document.getElementById("wrtc-chat-input").addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._sendChat(); }
+    });
+
+    this._startClock();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CLOCK
+  // ═══════════════════════════════════════════════════════════════════════
+  _startClock() {
+    const tick = () => {
+      const el = document.getElementById("wrtc-clock");
+      if (el) el.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    };
+    tick();
+    this._clockTimer = setInterval(tick, 15000);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // MIC / CAM
+  // ═══════════════════════════════════════════════════════════════════════
+  _toggleMic() {
+    this._micEnabled = !this._micEnabled;
+    this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
+    document.getElementById("wrtc-btn-mic").classList.toggle("muted", !this._micEnabled);
+    document.getElementById("wrtc-ico-mic").style.display     = this._micEnabled ? "" : "none";
+    document.getElementById("wrtc-ico-mic-off").style.display = this._micEnabled ? "none" : "";
+    this._toast(this._micEnabled ? "Microphone on" : "Microphone muted");
+  }
+
+  _toggleCam() {
+    this._camEnabled = !this._camEnabled;
+    this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
+    document.getElementById("wrtc-btn-cam").classList.toggle("muted", !this._camEnabled);
+    document.getElementById("wrtc-ico-cam").style.display     = this._camEnabled ? "" : "none";
+    document.getElementById("wrtc-ico-cam-off").style.display = this._camEnabled ? "none" : "";
+    document.getElementById("wrtc-local-video").style.display = this._camEnabled ? "block" : "none";
+    document.getElementById("wrtc-pip-avatar").style.display  = this._camEnabled ? "none"  : "flex";
+    this._toast(this._camEnabled ? "Camera on" : "Camera off");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SCREEN SHARE
+  // ═══════════════════════════════════════════════════════════════════════
+  async _toggleScreenShare() {
+    if (this._isSharing) {
+      this._shareStream?.getTracks().forEach(t => t.stop());
+      this._shareStream = null;
+      this._isSharing   = false;
+      await this._restoreCameraTrack();
+      document.getElementById("wrtc-btn-share").classList.remove("on-air");
+      document.getElementById("wrtc-ico-share").style.display      = "";
+      document.getElementById("wrtc-ico-share-stop").style.display  = "none";
+      document.getElementById("wrtc-local-video").srcObject = this._localStream;
+      this._clearPresenter();
+      this._sendWS({ type: "presenting", payload: { active: false } });
+      this._toast("Screen sharing stopped");
+    } else {
+      try {
+        this._shareStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        this._isSharing   = true;
+        const screenTrack = this._shareStream.getVideoTracks()[0];
+        screenTrack.onended = () => { if (this._isSharing) this._toggleScreenShare(); };
+        await this._replaceVideoTrack(screenTrack);
+        document.getElementById("wrtc-btn-share").classList.add("on-air");
+        document.getElementById("wrtc-ico-share").style.display     = "none";
+        document.getElementById("wrtc-ico-share-stop").style.display = "";
+        this._setLocalPresenter();
+        this._sendWS({ type: "presenting", payload: { active: true } });
+        this._toast("You are now presenting");
+      } catch (err) {
+        if (err.name !== "NotAllowedError") this._toast("Screen share failed");
+        this._log("Screen share error: " + err.message, undefined, "error");
+      }
+    }
+  }
+
+  _setPresenter(userId) {
+    const stage  = document.getElementById("wrtc-stage");
+    const thumbs = document.getElementById("wrtc-thumbs");
+    stage?.classList.add("presenting");
+    thumbs.innerHTML = "";
+
+    document.querySelectorAll(".wrtc-tile").forEach(tile => {
+      if (tile.id === `wrtc-tile-${userId}`) {
+        tile.classList.add("presenter");
+      } else {
+        this._addThumb(tile, thumbs);
+        tile.style.display = "none";
+      }
+    });
+  }
+
+  _setLocalPresenter() {
+    const stage  = document.getElementById("wrtc-stage");
+    const thumbs = document.getElementById("wrtc-thumbs");
+    const grid   = document.getElementById("wrtc-grid");
+    stage?.classList.add("presenting");
+    thumbs.innerHTML = "";
+
+    // Full-screen tile showing your screen share
+    const tile = document.createElement("div");
+    tile.id        = "wrtc-local-share-tile";
+    tile.className = "wrtc-tile presenter";
+
+    const video        = document.createElement("video");
+    video.autoplay     = true;
+    video.playsInline  = true;
+    video.muted        = true;
+    video.srcObject    = this._shareStream;
+
+    const badge        = document.createElement("div");
+    badge.className    = "wrtc-presenter-badge";
+    badge.textContent  = "You are presenting";
+
+    const label        = document.createElement("div");
+    label.className    = "wrtc-tile-label";
+    label.textContent  = this._myName || "You";
+
+    tile.append(video, badge, label);
+    grid.appendChild(tile);
+
+    // Move remote tiles to thumbnail strip
+    document.querySelectorAll(".wrtc-tile:not(#wrtc-local-share-tile)").forEach(t => {
+      this._addThumb(t, thumbs);
+      t.style.display = "none";
+    });
+
+    // PiP switches back to camera so you can see yourself
+    document.getElementById("wrtc-local-video").srcObject = this._localStream;
+  }
+
+  _addThumb(tile, thumbs) {
+    const vid = tile.querySelector("video");
+    if (!vid) return;
+    const wrap      = document.createElement("div");
+    wrap.className  = "wrtc-thumb-tile";
+    const tv        = document.createElement("video");
+    tv.autoplay     = true;
+    tv.playsInline  = true;
+    tv.muted        = true;
+    tv.srcObject    = vid.srcObject;
+    const lbl       = document.createElement("div");
+    lbl.className   = "wrtc-thumb-label";
+    lbl.textContent = tile.querySelector(".wrtc-tile-label")?.textContent || "";
+    wrap.append(tv, lbl);
+    thumbs.appendChild(wrap);
+  }
+
+  _clearPresenter() {
+    document.getElementById("wrtc-local-share-tile")?.remove();
+    document.getElementById("wrtc-stage")?.classList.remove("presenting");
+    document.getElementById("wrtc-thumbs").innerHTML = "";
+    document.querySelectorAll(".wrtc-tile").forEach(tile => {
+      tile.classList.remove("presenter");
+      tile.style.display = "";
+    });
+    this._updateGrid();
+  }
+
+  async _replaceVideoTrack(newTrack) {
+    for (const pc of Object.values(this._peerConnections)) {
+      const sender = pc.getSenders().find(s => s.track?.kind === "video");
+      if (sender) await sender.replaceTrack(newTrack);
+    }
+  }
+
+  async _restoreCameraTrack() {
+    const camTrack = this._localStream?.getVideoTracks()[0];
+    if (camTrack) await this._replaceVideoTrack(camTrack);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // RECORDING
+  // ═══════════════════════════════════════════════════════════════════════
+  _toggleRecording() {
+    if (this._isRecording) {
+      this._mediaRecorder?.stop();
+      this._isRecording = false;
+      document.getElementById("wrtc-btn-rec").classList.remove("active-feature");
+      document.getElementById("wrtc-rec-badge").classList.remove("active");
+      document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
+      this._toast("Recording saved");
+    } else {
+      const stream = this._isSharing ? this._shareStream : this._localStream;
+      if (!stream) { this._toast("No stream to record"); return; }
+
+      const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"]
+        .find(t => MediaRecorder.isTypeSupported(t)) || "";
+
+      this._recordChunks  = [];
+      this._mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
+      this._mediaRecorder.onstop = () => {
+        const blob = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
+        const url  = URL.createObjectURL(blob);
+        const a    = Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` });
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+      this._mediaRecorder.start(1000);
+      this._isRecording = true;
+      document.getElementById("wrtc-btn-rec").classList.add("active-feature");
+      document.getElementById("wrtc-rec-badge").classList.add("active");
+      document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
+      this._toast("Recording started");
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CHAT
+  // ═══════════════════════════════════════════════════════════════════════
+  _togglePanel(tab) {
+    if (this._panelTab === tab) { this._closePanel(); return; }
+    this._panelTab = tab;
+    document.getElementById("wrtc-side-panel").classList.add("open");
+    document.getElementById("wrtc-stage").classList.add("panel-open");
+    document.getElementById("wrtc-btn-people").classList.toggle("on-air", tab === "people");
+    document.getElementById("wrtc-btn-chat").classList.toggle("on-air", tab === "chat");
+    this._switchTab(tab);
+  }
+
+  _switchTab(tab) {
+    this._panelTab = tab;
+    document.getElementById("wrtc-tab-people").classList.toggle("active", tab === "people");
+    document.getElementById("wrtc-tab-chat").classList.toggle("active", tab === "chat");
+    document.getElementById("wrtc-people-content").style.display = tab === "people" ? "flex" : "none";
+    document.getElementById("wrtc-chat-content").style.display   = tab === "chat"   ? "flex" : "none";
+    if (tab === "chat") {
+      this._unread = 0;
+      document.getElementById("wrtc-chat-badge").classList.remove("show");
+      document.getElementById("wrtc-chat-badge-btn").classList.remove("show");
+      setTimeout(() => document.getElementById("wrtc-chat-input")?.focus(), 260);
+    }
+  }
+
+  _closePanel() {
+    this._panelTab = null;
+    document.getElementById("wrtc-side-panel").classList.remove("open");
+    document.getElementById("wrtc-stage").classList.remove("panel-open");
+    document.getElementById("wrtc-btn-people").classList.remove("on-air");
+    document.getElementById("wrtc-btn-chat").classList.remove("on-air");
+  }
+
+  // ── PARTICIPANTS ──────────────────────────────────────────────────────────
+  _addParticipant(userId, name) {
+    this._participants[userId] = name;
+    this._renderParticipants();
+  }
+
+  _removeParticipant(userId) {
+    delete this._participants[userId];
+    this._renderParticipants();
+  }
+
+  _renderParticipants() {
+    const list = document.getElementById("wrtc-people-list");
+    if (!list) return;
+    const total = Object.keys(this._participants).length + 1; // +1 for self
+    const countEl = document.getElementById("wrtc-people-count");
+    if (countEl) countEl.textContent = total;
+    this._updateUserCount(total);
+
+    list.innerHTML = "";
+
+    // Local user first
+    const selfEl = this._makePersonEl("local", this._myName || "You", true);
+    list.appendChild(selfEl);
+
+    // Remote participants
+    Object.entries(this._participants).forEach(([uid, name]) => {
+      list.appendChild(this._makePersonEl(uid, name, false));
+    });
+  }
+
+  _makePersonEl(userId, name, isMe) {
+    const div = document.createElement("div");
+    div.className = "wrtc-person";
+
+    const av = document.createElement("div");
+    av.className = "wrtc-person-avatar";
+    av.style.background = this._colorFromId(userId);
+    av.textContent = name.slice(0, 2).toUpperCase();
+
+    const info = document.createElement("div");
+    info.className = "wrtc-person-info";
+    const nameEl = document.createElement("div");
+    nameEl.className = "wrtc-person-name";
+    nameEl.textContent = name;
+    if (isMe) {
+      const tag = document.createElement("span");
+      tag.className = "wrtc-you-tag";
+      tag.textContent = "(you)";
+      nameEl.appendChild(tag);
+    }
+    info.appendChild(nameEl);
+
+    const icons = document.createElement("div");
+    icons.className = "wrtc-person-icons";
+    if (isMe) {
+      // show local mic/cam state
+      if (!this._micEnabled) {
+        icons.innerHTML += `<span class="wrtc-person-icon muted" title="Muted">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
-          </svg></span>`),a.append(r,e,t),a}_sendChat(){var e=document.getElementById("wrtc-chat-input"),t=e?.value.trim();t&&(e.value="",e=Date.now(),this._sendWS({type:"chat",payload:{text:t,ts:e}}),this._renderMessage("You",t,e,!0))}_renderMessage(e,t,i,a=!1){var r=document.getElementById("wrtc-chat-empty"),r=(r&&(r.style.display="none"),document.getElementById("wrtc-chat-msgs")),i=new Date(i).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),n=document.createElement("div");n.className="wrtc-msg"+(a?" mine":""),n.innerHTML=`
+          </svg></span>`;
+      }
+    }
+
+    div.append(av, info, icons);
+    return div;
+  }
+
+  _sendChat() {
+    const input = document.getElementById("wrtc-chat-input");
+    const text  = input?.value.trim();
+    if (!text) return;
+    input.value = "";
+    const ts = Date.now();
+    this._sendWS({ type: "chat", payload: { text, ts } });
+    this._renderMessage("You", text, ts, true);
+  }
+
+  _renderMessage(name, text, ts, isMine = false) {
+    const empty = document.getElementById("wrtc-chat-empty");
+    if (empty) empty.style.display = "none";
+
+    const msgs = document.getElementById("wrtc-chat-msgs");
+    const time = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    const div  = document.createElement("div");
+    div.className = `wrtc-msg${isMine ? " mine" : ""}`;
+    div.innerHTML = `
       <div class="wrtc-msg-header">
-        <span class="wrtc-msg-name${a?" mine":""}">${e}</span>
-        <span class="wrtc-msg-time">${i}</span>
+        <span class="wrtc-msg-name${isMine ? " mine" : ""}">${name}</span>
+        <span class="wrtc-msg-time">${time}</span>
       </div>
-      <span class="wrtc-msg-text">${t.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span>`,r.appendChild(n),r.scrollTop=r.scrollHeight}_renderSystemMsg(e){var t,i=document.getElementById("wrtc-chat-msgs");i&&((t=document.createElement("div")).className="wrtc-msg-system",t.textContent=e,i.appendChild(t),i.scrollTop=i.scrollHeight)}_toggleHand(){this._handRaised=!this._handRaised,document.getElementById("wrtc-btn-hand").classList.toggle("active-feature",this._handRaised),document.getElementById("wrtc-pip-hand").classList.toggle("raised",this._handRaised),this._sendWS({type:"raise-hand",payload:{raised:this._handRaised}}),this._toast(this._handRaised?"You raised your hand ✋":"Hand lowered")}_updateHandUI(e,t){e=document.getElementById("wrtc-hand-"+e);e&&e.classList.toggle("raised",t)}_setupAudioAnalyser(e,t){try{this._audioCtx||(this._audioCtx=new(window.AudioContext||window.webkitAudioContext));var i=this._audioCtx.createMediaStreamSource(t),a=this._audioCtx.createAnalyser();a.fftSize=256,a.smoothingTimeConstant=.8,i.connect(a),this._analysers[e]=a}catch(e){this._log("AudioContext error: "+e.message,void 0,"warn")}}_getAudioLevel(e){var t=new Uint8Array(e.frequencyBinCount);return e.getByteFrequencyData(t),t.reduce((e,t)=>e+t,0)/t.length}_startSpeakerDetection(){this._speakerTimer=setInterval(()=>{var e,t;let i=8,a=null;for([e,t]of Object.entries(this._analysers)){var r=this._getAudioLevel(t);r>i&&(i=r,a=e)}a!==this._currentSpeaker&&(this._currentSpeaker&&("local"===this._currentSpeaker?document.getElementById("wrtc-pip"):document.getElementById("wrtc-tile-"+this._currentSpeaker))?.classList.remove("speaking"),a&&("local"===a?document.getElementById("wrtc-pip"):document.getElementById("wrtc-tile-"+a))?.classList.add("speaking"),this._currentSpeaker=a)},200)}_toast(e){let t=document.getElementById("wrtc-toast");t&&(t.textContent=e,t.classList.add("show"),clearTimeout(this._toastTimer),this._toastTimer=setTimeout(()=>t.classList.remove("show"),2400))}_updateGrid(){var e=document.getElementById("wrtc-grid"),t=document.getElementById("wrtc-waiting"),i=Object.keys(this._peerConnections).length;e&&(t.style.display=0===i?"flex":"none",0===i?(e.style.gridTemplateColumns="1fr",e.style.gridTemplateRows="1fr"):(e.style.gridTemplateColumns=`repeat(${t=1===i?1:i<=4?2:i<=9?3:4}, minmax(0, 1fr))`,e.style.gridTemplateRows=`repeat(${Math.ceil(i/t)}, minmax(0, 1fr))`))}_log(e,t,i="info"){var a=(new Date).toTimeString().slice(0,8),t=void 0!==t?e+" "+JSON.stringify(t):e;("error"===i?console.error:"warn"===i?console.warn:console.log)(`[${a}] `+t)}async _getUserMedia(){this._log("Requesting camera + microphone...");try{this._localStream=await navigator.mediaDevices.getUserMedia({video:!0,audio:!0}),this._log("getUserMedia OK",this._localStream.getTracks().map(e=>e.kind+":"+e.label),"ok"),document.getElementById("wrtc-local-video").srcObject=this._localStream,this._setupAudioAnalyser("local",this._localStream)}catch(e){throw this._log("getUserMedia FAILED: "+e.message,void 0,"error"),e}}_setupWebSocket(){var e=`${this.serverUrl}/ws/meetings/${this.roomName}?token=`+this.token;this._log("Connecting WebSocket: "+e),this._ws=new WebSocket(e),this._ws.onopen=()=>{this._log("WS connected",void 0,"ok"),this._setStatus("ok"),this._sendWS({type:"name",payload:{name:this._myName}})},this._ws.onclose=e=>{this._log("WS closed — code="+e.code,void 0,"warn"),this._setStatus("err")},this._ws.onerror=()=>{this._log("WS error",void 0,"error"),this._setStatus("err")},this._ws.onmessage=e=>this._handleMessages(e)}_setupPeerConnection(t){if(this._peerConnections[t])return this._peerConnections[t];this._log("Creating PeerConnection for "+t);let i=new RTCPeerConnection(this._iceConfig);return this._localStream?.getTracks().forEach(e=>i.addTrack(e,this._localStream)),i.ontrack=e=>{this._log(`Remote track from ${t}: `+e.track.kind,void 0,"ok"),this._addRemoteVideo(t,e.streams[0]),"audio"===e.track.kind&&this._setupAudioAnalyser(t,e.streams[0])},i.onicecandidate=e=>{e.candidate&&this._sendWS({type:"ice-candidate",to:t,payload:{candidate:e.candidate}})},i.oniceconnectionstatechange=()=>this._log(`ICE [${t}]: `+i.iceConnectionState),i.onconnectionstatechange=()=>{var e=i.connectionState;this._log(`PC [${t}]: `+e,void 0,"connected"===e?"ok":"failed"===e?"error":"info"),"failed"!==e&&"disconnected"!==e||this._cleanupPeer(t)},this._peerConnections[t]=i}async _handleMessages(e){let t;try{t=JSON.parse(e.data)}catch{return void this._log("Non-JSON frame",void 0,"warn")}let{type:i,from:a,payload:r}=t;switch(i){case"user-list":r.users.forEach(e=>{this._participants[e]=this._displayName(e)}),this._renderParticipants();break;case"join":this._participants[r.user_id]=this._displayName(r.user_id),this._renderParticipants(),this._sendWS({type:"name",payload:{name:this._myName}}),this._isSharing&&setTimeout(()=>this._sendWS({type:"presenting",payload:{active:!0}}),800),await this._initiateOffer(r.user_id);break;case"leave":var n=this._displayName(r.user_id);this._toast(n+" left the call"),this._renderSystemMsg(n+" left"),document.getElementById("wrtc-tile-"+r.user_id)?.classList.contains("presenter")&&this._clearPresenter(),this._removeParticipant(r.user_id),this._cleanupPeer(r.user_id);break;case"offer":var n=this._setupPeerConnection(a),s=("have-local-offer"===n.signalingState&&await n.setLocalDescription({type:"rollback"}),await n.setRemoteDescription(new RTCSessionDescription(r.sdp)),await this._flushCandidates(a),await n.createAnswer());await n.setLocalDescription(s),this._sendWS({type:"answer",to:a,payload:{sdp:n.localDescription}});break;case"answer":s=this._peerConnections[a];s&&"have-local-offer"===s.signalingState&&(await s.setRemoteDescription(new RTCSessionDescription(r.sdp)),await this._flushCandidates(a));break;case"ice-candidate":n=this._peerConnections[a];n&&r.candidate&&(n.remoteDescription?await n.addIceCandidate(new RTCIceCandidate(r.candidate)):(this._pendingCandidates[a]||(this._pendingCandidates[a]=[]),this._pendingCandidates[a].push(new RTCIceCandidate(r.candidate))));break;case"chat":s=this._displayName(a);if(this._renderMessage(s,r.text,r.ts||Date.now(),!1),"chat"!==this._panelTab){this._unread++;let t=9<this._unread?"9+":this._unread;["wrtc-chat-badge","wrtc-chat-badge-btn"].forEach(e=>{e=document.getElementById(e);e&&(e.textContent=t,e.classList.add("show"))}),this._toast(s+": "+r.text.slice(0,40)+(40<r.text.length?"…":""))}break;case"name":this._peerNames[a]=r.name;n=document.getElementById("wrtc-tile-"+a);n&&((s=n.querySelector(".wrtc-tile-label"))&&(s.textContent=r.name),n=document.querySelector(`#wrtc-avatar-${a} span`))&&(n.textContent=r.name.slice(0,2).toUpperCase()),this._addParticipant(a,r.name),this._renderSystemMsg(r.name+" joined");break;case"raise-hand":s=this._displayName(a),n=r.raised;n?(this._raisedHands.add(a),this._toast(s+" raised their hand ✋"),this._renderSystemMsg(s+" raised their hand ✋")):this._raisedHands.delete(a),this._updateHandUI(a,n);break;case"presenting":s=this._displayName(a);r.active?(this._toast(s+" is presenting"),setTimeout(()=>this._setPresenter(a),300)):(this._clearPresenter(),this._toast(s+" stopped presenting"));break;case"sfu:rtpCapabilities":case"sfu:transportCreated":case"sfu:transportConnected":case"sfu:produced":case"sfu:newProducer":case"sfu:consumed":case"sfu:consumerResumed":case"sfu:producers":this._log(i+" (SFU stub)");break;case"error":this._log("Server error: "+r.detail,void 0,"error")}}async _initiateOffer(e){var t=this._setupPeerConnection(e),i=await t.createOffer();await t.setLocalDescription(i),this._sendWS({type:"offer",to:e,payload:{sdp:t.localDescription}})}async _flushCandidates(e){var t=this._pendingCandidates[e];if(t?.length){for(var i of t)await this._peerConnections[e].addIceCandidate(i);delete this._pendingCandidates[e]}}_cleanupPeer(e){this._peerConnections[e]?.close(),delete this._peerConnections[e],delete this._pendingCandidates[e],delete this._analysers[e],this._raisedHands.delete(e),document.getElementById("wrtc-tile-"+e)?.remove(),this._updateUserCount(Object.keys(this._peerConnections).length+1),this._updateGrid()}_sendWS(e){this._ws?.readyState===WebSocket.OPEN?this._ws.send(JSON.stringify(e)):this._log("WS not open — dropped "+e.type,void 0,"warn")}_addRemoteVideo(e,i){var a=document.getElementById("wrtc-vid-"+e);if(a)a.srcObject=i;else{var a=document.createElement("div"),r=(a.id="wrtc-tile-"+e,a.className="wrtc-tile",document.createElement("video"));r.id="wrtc-vid-"+e,r.autoplay=!0,r.playsInline=!0,r.srcObject=i;let t=document.createElement("div");t.className="wrtc-tile-avatar",t.id="wrtc-avatar-"+e;var n=document.createElement("span"),n=(n.style.background=this._colorFromId(e),n.textContent=this._displayName(e).slice(0,2).toUpperCase()||"?",t.appendChild(n),i.getVideoTracks().forEach(e=>{e.addEventListener("mute",()=>t.classList.add("visible")),e.addEventListener("unmute",()=>t.classList.remove("visible"))}),document.createElement("div")),i=(n.className="wrtc-tile-label",n.textContent=this._displayName(e),document.createElement("div")),s=(i.className="wrtc-presenter-badge",i.textContent="Presenting",document.createElement("div"));s.className="wrtc-tile-hand",s.id="wrtc-hand-"+e,s.textContent="✋",this._raisedHands.has(e)&&s.classList.add("raised"),a.append(r,t,i,n,s),document.getElementById("wrtc-grid").appendChild(a),this._updateGrid()}}_colorFromId(t){var e=["#1a73e8","#0f9d58","#f4511e","#a142f4","#00897b","#e52592","#e37400","#1967d2"];let i=0;for(let e=0;e<t.length;e++)i=31*i+t.charCodeAt(e)>>>0;return e[i%e.length]}_displayName(e){return e?"local"===e?this._myName||"You":this._peerNames[e]||"User "+(e.split("_").pop()||e).slice(0,6):"Unknown"}_updateUserCount(e){var t=document.getElementById("wrtc-user-count");t&&(t.textContent=e)}_setStatus(e){var t=document.getElementById("wrtc-status");t&&(t.className="wrtc-status-dot "+e)}hangup(){this._sendWS({type:"leave",payload:{}}),Object.keys(this._peerConnections).forEach(e=>this._cleanupPeer(e)),this._ws?.close(),this._localStream?.getTracks().forEach(e=>e.stop()),this._shareStream?.getTracks().forEach(e=>e.stop()),this._isRecording&&this._mediaRecorder?.stop(),clearInterval(this._clockTimer),clearInterval(this._speakerTimer),this._audioCtx&&(this._audioCtx.close(),this._audioCtx=null),document.getElementById("wrtc-local-video").srcObject=null,this._setStatus("err"),this._toast("You left the call")}}
+      <span class="wrtc-msg-text">${text.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  _renderSystemMsg(text) {
+    const msgs = document.getElementById("wrtc-chat-msgs");
+    if (!msgs) return;
+    const d = document.createElement("div");
+    d.className   = "wrtc-msg-system";
+    d.textContent = text;
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // RAISE HAND
+  // ═══════════════════════════════════════════════════════════════════════
+  _toggleHand() {
+    this._handRaised = !this._handRaised;
+    document.getElementById("wrtc-btn-hand").classList.toggle("active-feature", this._handRaised);
+    document.getElementById("wrtc-pip-hand").classList.toggle("raised", this._handRaised);
+    this._sendWS({ type: "raise-hand", payload: { raised: this._handRaised } });
+    this._toast(this._handRaised ? "You raised your hand ✋" : "Hand lowered");
+  }
+
+  _updateHandUI(userId, raised) {
+    const hand = document.getElementById(`wrtc-hand-${userId}`);
+    if (hand) hand.classList.toggle("raised", raised);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ACTIVE SPEAKER DETECTION
+  // ═══════════════════════════════════════════════════════════════════════
+  _setupAudioAnalyser(userId, stream) {
+    try {
+      if (!this._audioCtx) this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source   = this._audioCtx.createMediaStreamSource(stream);
+      const analyser = this._audioCtx.createAnalyser();
+      analyser.fftSize       = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      source.connect(analyser);
+      this._analysers[userId] = analyser;
+    } catch (e) {
+      this._log("AudioContext error: " + e.message, undefined, "warn");
+    }
+  }
+
+  _getAudioLevel(analyser) {
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(buf);
+    return buf.reduce((s, v) => s + v, 0) / buf.length;
+  }
+
+  _startSpeakerDetection() {
+    this._speakerTimer = setInterval(() => {
+      const THRESHOLD = 8;
+      let maxLevel = THRESHOLD, activeSpeaker = null;
+      for (const [uid, analyser] of Object.entries(this._analysers)) {
+        const lvl = this._getAudioLevel(analyser);
+        if (lvl > maxLevel) { maxLevel = lvl; activeSpeaker = uid; }
+      }
+      if (activeSpeaker !== this._currentSpeaker) {
+        // Clear old highlight
+        if (this._currentSpeaker) {
+          const prev = this._currentSpeaker === "local"
+            ? document.getElementById("wrtc-pip")
+            : document.getElementById(`wrtc-tile-${this._currentSpeaker}`);
+          prev?.classList.remove("speaking");
+        }
+        // Set new highlight
+        if (activeSpeaker) {
+          const el = activeSpeaker === "local"
+            ? document.getElementById("wrtc-pip")
+            : document.getElementById(`wrtc-tile-${activeSpeaker}`);
+          el?.classList.add("speaking");
+        }
+        this._currentSpeaker = activeSpeaker;
+      }
+    }, 200);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // TOAST
+  // ═══════════════════════════════════════════════════════════════════════
+  _toast(msg) {
+    const el = document.getElementById("wrtc-toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // GRID LAYOUT
+  // ═══════════════════════════════════════════════════════════════════════
+  _updateGrid() {
+    const grid    = document.getElementById("wrtc-grid");
+    const waiting = document.getElementById("wrtc-waiting");
+    const count   = Object.keys(this._peerConnections).length;
+    if (!grid) return;
+    waiting.style.display = count === 0 ? "flex" : "none";
+    if (count === 0) {
+      grid.style.gridTemplateColumns = "1fr";
+      grid.style.gridTemplateRows    = "1fr";
+      return;
+    }
+    const cols = count === 1 ? 1 : count <= 4 ? 2 : count <= 9 ? 3 : 4;
+    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    grid.style.gridTemplateRows    = `repeat(${Math.ceil(count / cols)}, minmax(0, 1fr))`;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // LOGGER
+  // ═══════════════════════════════════════════════════════════════════════
+  _log(msg, data, level = "info") {
+    const ts  = new Date().toTimeString().slice(0, 8);
+    const out = data !== undefined ? `${msg} ${JSON.stringify(data)}` : msg;
+    (level === "error" ? console.error : level === "warn" ? console.warn : console.log)(`[${ts}] ${out}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // getUserMedia
+  // ═══════════════════════════════════════════════════════════════════════
+  async _getUserMedia() {
+    this._log("Requesting camera + microphone...");
+    try {
+      this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      this._log("getUserMedia OK", this._localStream.getTracks().map(t => `${t.kind}:${t.label}`), "ok");
+      document.getElementById("wrtc-local-video").srcObject = this._localStream;
+      this._setupAudioAnalyser("local", this._localStream);
+    } catch (err) {
+      this._log("getUserMedia FAILED: " + err.message, undefined, "error");
+      throw err;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // WebSocket
+  // ═══════════════════════════════════════════════════════════════════════
+  _setupWebSocket() {
+    const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}`;
+    this._log("Connecting WebSocket: " + url);
+    this._ws = new WebSocket(url);
+    this._ws.onopen    = ()  => {
+      this._log("WS connected", undefined, "ok");
+      this._setStatus("ok");
+      // Tell everyone in the room our name
+      this._sendWS({ type: "name", payload: { name: this._myName } });
+    };
+    this._ws.onclose   = (e) => { this._log(`WS closed — code=${e.code}`, undefined, "warn"); this._setStatus("err"); };
+    this._ws.onerror   = ()  => { this._log("WS error", undefined, "error"); this._setStatus("err"); };
+    this._ws.onmessage = (e) => this._handleMessages(e);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // RTCPeerConnection factory
+  // ═══════════════════════════════════════════════════════════════════════
+  _setupPeerConnection(remoteUserId) {
+    if (this._peerConnections[remoteUserId]) return this._peerConnections[remoteUserId];
+
+    this._log(`Creating PeerConnection for ${remoteUserId}`);
+    const pc = new RTCPeerConnection(this._iceConfig);
+
+    this._localStream?.getTracks().forEach(track => pc.addTrack(track, this._localStream));
+
+    pc.ontrack = (e) => {
+      this._log(`Remote track from ${remoteUserId}: ${e.track.kind}`, undefined, "ok");
+      this._addRemoteVideo(remoteUserId, e.streams[0]);
+      if (e.track.kind === "audio") this._setupAudioAnalyser(remoteUserId, e.streams[0]);
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) this._sendWS({ type: "ice-candidate", to: remoteUserId, payload: { candidate: e.candidate } });
+    };
+
+    pc.oniceconnectionstatechange = () => this._log(`ICE [${remoteUserId}]: ${pc.iceConnectionState}`);
+
+    pc.onconnectionstatechange = () => {
+      const s = pc.connectionState;
+      this._log(`PC [${remoteUserId}]: ${s}`, undefined, s === "connected" ? "ok" : s === "failed" ? "error" : "info");
+      if (s === "failed" || s === "disconnected") this._cleanupPeer(remoteUserId);
+    };
+
+    this._peerConnections[remoteUserId] = pc;
+    return pc;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SIGNALING MESSAGE HANDLER
+  // ═══════════════════════════════════════════════════════════════════════
+  async _handleMessages(event) {
+    let msg;
+    try { msg = JSON.parse(event.data); }
+    catch { this._log("Non-JSON frame", undefined, "warn"); return; }
+
+    const { type, from, payload } = msg;
+
+    switch (type) {
+
+      case "user-list":
+        // Populate participants for users already in room (names arrive via "name" messages)
+        payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
+        this._renderParticipants();
+        break;
+
+      case "join":
+        this._participants[payload.user_id] = this._displayName(payload.user_id);
+        this._renderParticipants();
+        // Tell the new joiner our name
+        this._sendWS({ type: "name", payload: { name: this._myName } });
+        // If we're presenting, re-announce so late joiner gets the layout
+        if (this._isSharing) {
+          setTimeout(() => this._sendWS({ type: "presenting", payload: { active: true } }), 800);
+        }
+        await this._initiateOffer(payload.user_id);
+        break;
+
+      case "leave": {
+        const leaveName = this._displayName(payload.user_id);
+        this._toast(`${leaveName} left the call`);
+        this._renderSystemMsg(`${leaveName} left`);
+        const presenterTile = document.getElementById(`wrtc-tile-${payload.user_id}`);
+        if (presenterTile?.classList.contains("presenter")) this._clearPresenter();
+        this._removeParticipant(payload.user_id);
+        this._cleanupPeer(payload.user_id);
+        break;
+      }
+
+      case "offer": {
+        const pc = this._setupPeerConnection(from);
+        if (pc.signalingState === "have-local-offer") {
+          await pc.setLocalDescription({ type: "rollback" });
+        }
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        await this._flushCandidates(from);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        this._sendWS({ type: "answer", to: from, payload: { sdp: pc.localDescription } });
+        break;
+      }
+
+      case "answer": {
+        const pc = this._peerConnections[from];
+        if (!pc || pc.signalingState !== "have-local-offer") break;
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        await this._flushCandidates(from);
+        break;
+      }
+
+      case "ice-candidate": {
+        const pc = this._peerConnections[from];
+        if (!pc || !payload.candidate) break;
+        if (!pc.remoteDescription) {
+          if (!this._pendingCandidates[from]) this._pendingCandidates[from] = [];
+          this._pendingCandidates[from].push(new RTCIceCandidate(payload.candidate));
+        } else {
+          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+        }
+        break;
+      }
+
+      case "chat": {
+        const name = this._displayName(from);
+        this._renderMessage(name, payload.text, payload.ts || Date.now(), false);
+        if (this._panelTab !== "chat") {
+          this._unread++;
+          const n = this._unread > 9 ? "9+" : this._unread;
+          ["wrtc-chat-badge","wrtc-chat-badge-btn"].forEach(id => {
+            const b = document.getElementById(id);
+            if (b) { b.textContent = n; b.classList.add("show"); }
+          });
+          this._toast(`${name}: ${payload.text.slice(0, 40)}${payload.text.length > 40 ? "…" : ""}`);
+        }
+        break;
+      }
+
+      case "name": {
+        this._peerNames[from] = payload.name;
+        const tile = document.getElementById(`wrtc-tile-${from}`);
+        if (tile) {
+          const lbl = tile.querySelector(".wrtc-tile-label");
+          if (lbl) lbl.textContent = payload.name;
+          const av = document.querySelector(`#wrtc-avatar-${from} span`);
+          if (av) av.textContent = payload.name.slice(0, 2).toUpperCase();
+        }
+        this._addParticipant(from, payload.name);
+        this._renderSystemMsg(`${payload.name} joined`);
+        break;
+      }
+
+      case "raise-hand": {
+        const name   = this._displayName(from);
+        const raised = payload.raised;
+        if (raised) {
+          this._raisedHands.add(from);
+          this._toast(`${name} raised their hand ✋`);
+          this._renderSystemMsg(`${name} raised their hand ✋`);
+        } else {
+          this._raisedHands.delete(from);
+        }
+        this._updateHandUI(from, raised);
+        break;
+      }
+
+      case "presenting": {
+        const name = this._displayName(from);
+        if (payload.active) {
+          this._toast(`${name} is presenting`);
+          // Wait briefly for the tile to be ready, then expand it
+          setTimeout(() => this._setPresenter(from), 300);
+        } else {
+          this._clearPresenter();
+          this._toast(`${name} stopped presenting`);
+        }
+        break;
+      }
+
+      case "sfu:rtpCapabilities":
+      case "sfu:transportCreated":
+      case "sfu:transportConnected":
+      case "sfu:produced":
+      case "sfu:newProducer":
+      case "sfu:consumed":
+      case "sfu:consumerResumed":
+      case "sfu:producers":
+        this._log(`${type} (SFU stub)`);
+        break;
+
+      case "error": this._log("Server error: " + payload.detail, undefined, "error"); break;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // P2P HELPERS
+  // ═══════════════════════════════════════════════════════════════════════
+  async _initiateOffer(remoteUserId) {
+    const pc    = this._setupPeerConnection(remoteUserId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    this._sendWS({ type: "offer", to: remoteUserId, payload: { sdp: pc.localDescription } });
+  }
+
+  async _flushCandidates(userId) {
+    const queued = this._pendingCandidates[userId];
+    if (!queued?.length) return;
+    for (const c of queued) await this._peerConnections[userId].addIceCandidate(c);
+    delete this._pendingCandidates[userId];
+  }
+
+  _cleanupPeer(userId) {
+    this._peerConnections[userId]?.close();
+    delete this._peerConnections[userId];
+    delete this._pendingCandidates[userId];
+    delete this._analysers[userId];
+    this._raisedHands.delete(userId);
+    document.getElementById(`wrtc-tile-${userId}`)?.remove();
+    this._updateUserCount(Object.keys(this._peerConnections).length + 1);
+    this._updateGrid();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // UTILITIES
+  // ═══════════════════════════════════════════════════════════════════════
+  _sendWS(msg) {
+    if (this._ws?.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify(msg));
+    else this._log("WS not open — dropped " + msg.type, undefined, "warn");
+  }
+
+  _addRemoteVideo(userId, stream) {
+    const existingVideo = document.getElementById(`wrtc-vid-${userId}`);
+    if (existingVideo) { existingVideo.srcObject = stream; return; }
+
+    const tile = document.createElement("div");
+    tile.id        = `wrtc-tile-${userId}`;
+    tile.className = "wrtc-tile";
+
+    const video = document.createElement("video");
+    video.id          = `wrtc-vid-${userId}`;
+    video.autoplay    = true;
+    video.playsInline = true;
+    video.srcObject   = stream;
+
+    // Avatar — hidden by default (camera is on). Shown only when video track is muted/disabled.
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "wrtc-tile-avatar";
+    avatarWrap.id        = `wrtc-avatar-${userId}`;
+    const avatar = document.createElement("span");
+    avatar.style.background = this._colorFromId(userId);
+    avatar.textContent      = this._displayName(userId).slice(0, 2).toUpperCase() || "?";
+    avatarWrap.appendChild(avatar);
+
+    // Show avatar when remote video track goes silent (camera off)
+    stream.getVideoTracks().forEach(track => {
+      track.addEventListener("mute",   () => avatarWrap.classList.add("visible"));
+      track.addEventListener("unmute", () => avatarWrap.classList.remove("visible"));
+    });
+
+    const label = document.createElement("div");
+    label.className   = "wrtc-tile-label";
+    label.textContent = this._displayName(userId);
+
+    const badge = document.createElement("div");
+    badge.className = "wrtc-presenter-badge";
+    badge.textContent = "Presenting";
+
+    const hand = document.createElement("div");
+    hand.className = "wrtc-tile-hand";
+    hand.id        = `wrtc-hand-${userId}`;
+    hand.textContent = "✋";
+    if (this._raisedHands.has(userId)) hand.classList.add("raised");
+
+    tile.append(video, avatarWrap, badge, label, hand);
+    document.getElementById("wrtc-grid").appendChild(tile);
+    this._updateGrid();
+  }
+
+  _colorFromId(id) {
+    const colors = ["#1a73e8","#0f9d58","#f4511e","#a142f4","#00897b","#e52592","#e37400","#1967d2"];
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return colors[h % colors.length];
+  }
+
+  _displayName(userId) {
+    if (!userId) return "Unknown";
+    if (userId === "local") return this._myName || "You";
+    return this._peerNames[userId] || ("User " + (userId.split("_").pop() || userId).slice(0, 6));
+  }
+
+  _updateUserCount(n) {
+    const el = document.getElementById("wrtc-user-count");
+    if (el) el.textContent = n;
+  }
+
+  _setStatus(cls) {
+    const el = document.getElementById("wrtc-status");
+    if (el) el.className = `wrtc-status-dot ${cls}`;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PUBLIC: hangup
+  // ═══════════════════════════════════════════════════════════════════════
+  hangup() {
+    this._sendWS({ type: "leave", payload: {} });
+    Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
+    this._ws?.close();
+    this._localStream?.getTracks().forEach(t => t.stop());
+    this._shareStream?.getTracks().forEach(t => t.stop());
+    if (this._isRecording) this._mediaRecorder?.stop();
+    clearInterval(this._clockTimer);
+    clearInterval(this._speakerTimer);
+    if (this._audioCtx) { this._audioCtx.close(); this._audioCtx = null; }
+    document.getElementById("wrtc-local-video").srcObject = null;
+    this._setStatus("err");
+    this._toast("You left the call");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // INIT
+  // ═══════════════════════════════════════════════════════════════════════
+  // _init is not used directly — entry point is _buildLobby → _joinMeeting
+}

@@ -14,6 +14,7 @@ from app.core.database import Base
 # Register all models so Alembic can see them for autogenerate
 import app.modules.auth.models  # noqa: F401
 import app.modules.meeting.models  # noqa: F401
+import app.modules.project.models  # noqa: F401
 
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ from app.core.redis_client import close_redis, get_redis, init_redis
 from app.modules.auth.router import router as auth_router
 from app.modules.meeting.router import router as meeting_router
 from app.modules.meeting.websocket import router as signaling_router
+from app.modules.project.router import router as project_router
 
 
 @asynccontextmanager
@@ -39,6 +40,7 @@ app = FastAPI(
         "Modules: Auth, Meeting, WebRTC Signaling."
     ),
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
@@ -48,14 +50,26 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS_LIST,
-    allow_credentials=True,
+    allow_credentials=settings.CORS_ORIGINS_LIST != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ── ngrok browser warning bypass ─────────────────────────────────────────────
+# ngrok free tier shows an interstitial warning page unless this header is set.
+@app.middleware("http")
+async def ngrok_skip_browser_warning(request, call_next):
+    response = await call_next(request)
+    response.headers["ngrok-skip-browser-warning"] = "true"
+    return response
+
 # ── Static files ──────────────────────────────────────────────────────────────
-_PUBLIC_DIR = Path(__file__).parent.parent / "public"
+_PUBLIC_DIR    = Path(__file__).parent.parent / "public"
+_FRONTEND_DIR  = Path(__file__).parent.parent.parent.parent / "Frontend-html"
+
 app.mount("/public", StaticFiles(directory=_PUBLIC_DIR), name="public")
+if _FRONTEND_DIR.exists():
+    app.mount("/Frontend-html", StaticFiles(directory=_FRONTEND_DIR), name="frontend")
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +77,7 @@ API_PREFIX = "/api/v1"
 
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(meeting_router, prefix=API_PREFIX)
+app.include_router(project_router, prefix=API_PREFIX)
 app.include_router(signaling_router)  # WebSocket — no /api/v1 prefix, uses /ws/meetings/{id}
 
 
