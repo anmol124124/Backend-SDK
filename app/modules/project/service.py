@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.dynamic_cors import invalidate_cors_cache
 from app.modules.project.models import Project, ProjectDomain
 from app.modules.project.schemas import DomainAddRequest, ProjectCreateRequest
 
@@ -61,6 +62,7 @@ class ProjectService:
         )
         db.add(domain)
         await db.refresh(project)
+        invalidate_cors_cache()
         return project
 
     @staticmethod
@@ -116,6 +118,7 @@ class ProjectService:
         db.add(domain)
         await db.flush()
         await db.refresh(domain)
+        invalidate_cors_cache()
         return domain
 
     @staticmethod
@@ -133,6 +136,7 @@ class ProjectService:
         if not domain:
             raise HTTPException(status_code=404, detail="Domain not found")
         await db.delete(domain)
+        invalidate_cors_cache()
 
     @staticmethod
     def generate_embed_html(project: Project, backend_url: str) -> str:

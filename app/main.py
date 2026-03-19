@@ -3,13 +3,13 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.dynamic_cors import DynamicCORSMiddleware
 from app.core.mediasoup_client import sfu
 from app.core.rabbitmq import close_rabbitmq, get_rabbitmq, init_rabbitmq
 from app.core.redis_client import close_redis, get_redis, init_redis
@@ -44,16 +44,9 @@ app = FastAPI(
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
-# Origins are controlled via the CORS_ORIGINS env var (comma-separated).
-# Default is localhost:5173 for local development only.
-# In production set: CORS_ORIGINS=https://app.yourplatform.com
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS_LIST,
-    allow_credentials=settings.CORS_ORIGINS_LIST != ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Dynamic CORS: allowed origins = CORS_ORIGINS env var + all project_domains in DB.
+# No server restart needed — adding/removing a domain takes effect immediately.
+app.add_middleware(DynamicCORSMiddleware)
 
 # ── ngrok browser warning bypass ─────────────────────────────────────────────
 # ngrok free tier shows an interstitial warning page unless this header is set.
