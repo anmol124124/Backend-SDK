@@ -64,12 +64,9 @@ async def ngrok_skip_browser_warning(request, call_next):
     return response
 
 # ── Static files ──────────────────────────────────────────────────────────────
-_PUBLIC_DIR    = Path(__file__).parent.parent / "public"
-_FRONTEND_DIR  = Path(__file__).parent.parent.parent.parent / "Frontend-html"
+_PUBLIC_DIR = Path(__file__).parent.parent / "public"
 
 app.mount("/public", StaticFiles(directory=_PUBLIC_DIR), name="public")
-if _FRONTEND_DIR.exists():
-    app.mount("/Frontend-html", StaticFiles(directory=_FRONTEND_DIR), name="frontend")
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
