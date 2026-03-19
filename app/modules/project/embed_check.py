@@ -19,7 +19,7 @@ def _extract_host(origin: str) -> str:
         return ""
     try:
         parsed = urlparse(origin)
-        return parsed.hostname or ""
+        return parsed.netloc or ""
     except Exception:
         return ""
 
@@ -28,7 +28,7 @@ async def check_embed_domain(token: str, origin: str) -> bool:
     """
     Returns True if the origin is permitted to use this embed token.
     - Tokens without project_id → always allowed (regular user tokens).
-    - Tokens with project_id and no domains configured → allowed (open mode).
+    - Tokens with project_id and no domains configured → blocked (closed by default).
     - Tokens with project_id and domains configured → only matching hosts allowed.
     """
     try:
