@@ -77,10 +77,16 @@ class Settings(BaseSettings):
             return ["*"]
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
+    # ── RSA key pair (RS256) — public meeting tokens ─────────────────────
+    # Stored as base64-encoded PEM. Generate with:
+    #   python -c "from cryptography.hazmat.primitives.asymmetric import rsa; ..."
+    RSA_PRIVATE_KEY: str = ""   # base64(PEM private key)
+    RSA_PUBLIC_KEY:  str = ""   # base64(PEM public key)
+
+    # ── Public meet frontend URL ──────────────────────────────────────────
+    PUBLIC_MEET_URL: str = "https://meet.antier.xyz"
+
     # ── Backend public URL ────────────────────────────────────────────────
-    # The externally reachable URL of this backend (no trailing slash).
-    # Set this to your ngrok/production URL.
-    # Example: BACKEND_PUBLIC_URL=https://septimal-irving-realistic.ngrok-free.dev
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"
 
     # ── Secret validation ─────────────────────────────────────────────────

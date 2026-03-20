@@ -86,6 +86,7 @@ from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.mediasoup_client import sfu
+from app.core.rsa_tokens import decode_public_token
 from app.core.security import decode_token
 from app.modules.auth.models import User
 from app.modules.meeting.connection_manager import manager
@@ -114,6 +115,46 @@ _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 # ── Auth & validation helpers ─────────────────────────────────────────────────
 
 async def _get_user_from_token(token: str, origin: str | None = None) -> User | None:
+    """
+    Accepts two token types:
+
+    1. HS256 "access" token  — enterprise embed flow (existing behaviour).
+       Validates domain allowlist via check_embed_domain.
+
+    2. RS256 "public_host" / "public_guest" tokens — public meeting flow.
+       No domain allowlist check — security comes from the RS256 signature.
+       Returns a synthetic User-like object for guests (no DB row needed).
+    """
+    # ── Try RS256 public meeting token first ──────────────────────────────
+    try:
+        pub_payload = decode_public_token(token)
+        token_type = pub_payload.get("type")
+        if token_type in ("public_host", "public_guest"):
+            raw_id = pub_payload.get("sub", "")
+            # For public_host: sub is a real user UUID → fetch from DB
+            if token_type == "public_host":
+                try:
+                    user_id = uuid.UUID(raw_id)
+                except ValueError:
+                    return None
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(select(User).where(User.id == user_id))
+                    return result.scalar_one_or_none()
+            # For public_guest: create a lightweight synthetic user object
+            # (no DB row — guests are anonymous; use SimpleNamespace to avoid
+            #  SQLAlchemy _sa_instance_state issues with User.__new__)
+            import types
+            guest_name = pub_payload.get("name", "Guest")
+            synthetic = types.SimpleNamespace(
+                id    = uuid.uuid5(uuid.NAMESPACE_URL, raw_id),
+                name  = guest_name,
+                email = f"{raw_id}@guest.local",
+            )
+            return synthetic
+    except JWTError:
+        pass  # not a public token — fall through to HS256 check
+
+    # ── HS256 enterprise embed token ──────────────────────────────────────
     try:
         payload = decode_token(token)
     except JWTError:
@@ -122,7 +163,7 @@ async def _get_user_from_token(token: str, origin: str | None = None) -> User | 
     if payload.get("type") != "access":
         return None
 
-    raw_id: str | None = payload.get("sub")
+    raw_id = payload.get("sub")
     if not raw_id:
         return None
 

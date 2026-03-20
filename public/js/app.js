@@ -69,6 +69,15 @@ class WebRTCMeetingAPI {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        {
+          urls: [
+            "turn:openrelay.metered.ca:80",
+            "turn:openrelay.metered.ca:443",
+            "turns:openrelay.metered.ca:443",
+          ],
+          username: "openrelayproject",
+          credential: "openrelayproject",
+        },
       ],
     };
 
@@ -76,6 +85,15 @@ class WebRTCMeetingAPI {
   }
 
   _init() {
+    // Public meeting tokens (RS256) don't belong to any project — skip embed-check
+    try {
+      const payload = JSON.parse(atob(this.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (payload.type === 'public_host' || payload.type === 'public_guest') {
+        this._buildLobby();
+        return;
+      }
+    } catch (_) { /* not a parseable JWT — fall through to embed-check */ }
+
     fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
       .then(res => {
         if (!res.ok) { this._showAccessDenied(); return; }
@@ -1686,3 +1704,6 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // _init is not used directly — entry point is _buildLobby → _joinMeeting
 }
+
+// Expose to global scope so it can be used by dynamically loaded scripts
+window.WebRTCMeetingAPI = WebRTCMeetingAPI;

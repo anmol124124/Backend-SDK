@@ -17,6 +17,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.meeting.router import router as meeting_router
 from app.modules.meeting.websocket import router as signaling_router
 from app.modules.project.router import router as project_router
+from app.modules.public_meeting.router import router as public_meeting_router
 
 
 @asynccontextmanager
@@ -68,6 +69,7 @@ API_PREFIX = "/api/v1"
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(meeting_router, prefix=API_PREFIX)
 app.include_router(project_router, prefix=API_PREFIX)
+app.include_router(public_meeting_router, prefix=API_PREFIX)
 app.include_router(signaling_router)  # WebSocket — no /api/v1 prefix, uses /ws/meetings/{id}
 
 
