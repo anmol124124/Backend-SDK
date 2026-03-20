@@ -7,6 +7,8 @@ _KNOWN_INSECURE_DEFAULTS = {
     'change-this-in-production',
     'change-this-to-a-very-long-random-secret-key-in-production',
     'change-this-secret-in-production',
+    'postgres',
+    'guest',
     '',
 }
 
@@ -98,17 +100,39 @@ class Settings(BaseSettings):
     # This prevents deploying with known-insecure defaults.
     @model_validator(mode='after')
     def validate_secrets(self) -> 'Settings':
+        # Skip strict validation in local dev
+        if self.DEBUG:
+            return self
+
         errors = []
+
         if self.JWT_SECRET_KEY in _KNOWN_INSECURE_DEFAULTS:
             errors.append(
-                "JWT_SECRET_KEY is not set or is a placeholder. "
-                "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+                "JWT_SECRET_KEY is not set. "
+                "Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
         if self.MEDIASOUP_INTERNAL_SECRET in _KNOWN_INSECURE_DEFAULTS:
             errors.append(
-                "MEDIASOUP_INTERNAL_SECRET is not set or is a placeholder. "
-                "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
+                "MEDIASOUP_INTERNAL_SECRET is not set. "
+                "Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
+        if self.POSTGRES_PASSWORD in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "POSTGRES_PASSWORD is using a weak default. Set a strong password in .env"
+            )
+        if self.RABBITMQ_PASSWORD in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "RABBITMQ_PASSWORD is using a weak default. Set a strong password in .env"
+            )
+        if self.RSA_PRIVATE_KEY in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "RSA_PRIVATE_KEY is not set. Required for public meeting tokens."
+            )
+        if self.RSA_PUBLIC_KEY in _KNOWN_INSECURE_DEFAULTS:
+            errors.append(
+                "RSA_PUBLIC_KEY is not set. Required for public meeting tokens."
+            )
+
         if errors:
             raise ValueError("Insecure configuration detected:\n  " + "\n  ".join(errors))
         return self
