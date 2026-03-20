@@ -18,10 +18,6 @@ from jose import jwt, JWTError
 
 from app.core.config import settings
 
-# Token lifetimes
-_HOST_TOKEN_TTL_HOURS  = 12
-_GUEST_TOKEN_TTL_HOURS = 12
-
 _ALGORITHM = "RS256"
 
 
@@ -40,7 +36,7 @@ def create_host_token(user_id: str, room_code: str) -> str:
     Create a short-lived RS256 token for a logged-in meeting host.
     The WebSocket handler uses this to authenticate the host.
     """
-    expire = datetime.now(timezone.utc) + timedelta(hours=_HOST_TOKEN_TTL_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.PUBLIC_HOST_TOKEN_TTL_HOURS)
     payload = {
         "sub":       user_id,
         "room":      room_code,
@@ -56,7 +52,7 @@ def create_guest_token(name: str, room_code: str) -> str:
     Create a short-lived RS256 token for an anonymous meeting guest.
     The WebSocket handler uses this to authenticate the guest.
     """
-    expire = datetime.now(timezone.utc) + timedelta(hours=_GUEST_TOKEN_TTL_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.PUBLIC_GUEST_TOKEN_TTL_HOURS)
     payload = {
         "sub":       f"guest:{_uuid.uuid4()}",   # unique per session
         "name":      name,

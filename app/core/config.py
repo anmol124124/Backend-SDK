@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     RSA_PRIVATE_KEY: str = ""   # base64(PEM private key)
     RSA_PUBLIC_KEY:  str = ""   # base64(PEM public key)
 
+    # Token TTL for public meeting tokens (hours)
+    PUBLIC_HOST_TOKEN_TTL_HOURS:  int = 12
+    PUBLIC_GUEST_TOKEN_TTL_HOURS: int = 12
+
     # ── Public meet frontend URL ──────────────────────────────────────────
     PUBLIC_MEET_URL: str = "https://meet.antier.xyz"
 
