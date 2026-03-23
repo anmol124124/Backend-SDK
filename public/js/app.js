@@ -389,7 +389,8 @@ class WebRTCMeetingAPI {
 
   _joinMeeting(name) {
     this._myName = name;
-    sessionStorage.setItem('wrtc_name_' + this.roomName, name);
+    // NOTE: do NOT save wrtc_name_ here — only save after admission (user-list received).
+    // Saving here would allow a pending guest to bypass knock-approval on refresh.
     // Show a lightweight waiting screen; full UI is built only after host admits us
     this.parentNode.innerHTML =
       '<style>@keyframes wrtc-csp{to{transform:rotate(360deg)}}</style>' +
@@ -1668,10 +1669,14 @@ class WebRTCMeetingAPI {
     const popupId = "wrtc-knock-popup-" + guestId;
     if (document.getElementById(popupId)) return; // popup already showing
 
+    // Stack popups vertically so multiple simultaneous requests are all visible
+    const existingCount = document.querySelectorAll('[id^="wrtc-knock-popup-"]').length;
+    const topPx = 20 + existingCount * 80;
+
     const popup = document.createElement("div");
     popup.id = popupId;
     popup.style.cssText =
-      "position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:300;" +
+      "position:fixed;top:" + topPx + "px;left:50%;transform:translateX(-50%);z-index:300;" +
       "background:#2d2e31;border:1px solid rgba(255,255,255,.12);border-radius:14px;" +
       "padding:14px 18px;display:flex;align-items:center;gap:14px;" +
       "box-shadow:0 4px 32px rgba(0,0,0,.7);font-family:sans-serif;min-width:300px;" +
@@ -1948,6 +1953,8 @@ class WebRTCMeetingAPI {
         this._myUserId  = payload.myId || null;
         this._isHost    = payload.isHost || false;
         this._settings  = payload.settings || {};
+        // Only now is the user admitted — safe to persist name for reconnect
+        sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
         // Populate participants for users already in room (names arrive via "name" messages)
