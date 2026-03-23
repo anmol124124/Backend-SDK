@@ -97,7 +97,7 @@ async def get_meeting(room_code: str, db: AsyncSession) -> MeetingInfoResponse:
     )
 
 
-async def get_host_token(room_code: str, user_id: str, db: AsyncSession) -> TokenResponse:
+async def get_host_token(room_code: str, user_id: str, user_name: str, db: AsyncSession) -> TokenResponse:
     meeting = (
         await db.execute(select(PublicMeeting).where(PublicMeeting.room_code == room_code))
     ).scalar_one_or_none()
@@ -108,7 +108,7 @@ async def get_host_token(room_code: str, user_id: str, db: AsyncSession) -> Toke
         raise HTTPException(status_code=410, detail="Meeting has ended")
 
     token = create_host_token(user_id=user_id, room_code=room_code)
-    return TokenResponse(token=token, room_code=room_code, name="host")
+    return TokenResponse(token=token, room_code=room_code, name=user_name)
 
 
 async def get_guest_token(room_code: str, name: str, db: AsyncSession) -> TokenResponse:

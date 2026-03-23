@@ -65,6 +65,7 @@ async def host_token(
     return await service.get_host_token(
         room_code=room_code,
         user_id=str(current_user.id),
+        user_name=current_user.email.split("@")[0],
         db=db,
     )
 

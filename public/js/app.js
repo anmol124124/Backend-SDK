@@ -273,12 +273,14 @@ class WebRTCMeetingAPI {
 
     document.getElementById("wrtc-lobby-room-name").textContent = this.roomName;
 
-    // Enable Join only when name is non-empty
+    // Enable Join only when name is non-empty AND camera preview is ready
     const nameInput = document.getElementById("wrtc-name-input");
     const joinBtn   = document.getElementById("wrtc-join-btn");
-    nameInput.addEventListener("input", () => {
-      joinBtn.disabled = nameInput.value.trim().length === 0;
-    });
+    let previewReady = false;
+    const refreshJoinBtn = () => {
+      joinBtn.disabled = nameInput.value.trim().length === 0 || !previewReady;
+    };
+    nameInput.addEventListener("input", refreshJoinBtn);
     nameInput.addEventListener("keydown", e => {
       if (e.key === "Enter" && !joinBtn.disabled) joinBtn.click();
     });
@@ -307,10 +309,12 @@ class WebRTCMeetingAPI {
 
     // Start camera preview, then auto-rejoin if session name exists
     this._initPreview().then(() => {
+      previewReady = true;
+      refreshJoinBtn();
       const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
       if (savedName) {
         nameInput.value = savedName;
-        joinBtn.disabled = false;
+        refreshJoinBtn();
         joinBtn.click();
         if (sessionStorage.getItem('wrtc_sharing_' + this.roomName)) {
           setTimeout(() => this._toast("Screen sharing stopped — click Share to resume"), 1500);
@@ -483,10 +487,9 @@ class WebRTCMeetingAPI {
       .wrtc-tile.presenter .wrtc-presenter-badge{ display:block; }
       /* thumbnails strip while presenter is active */
       .wrtc-thumbs{
-        position:absolute;bottom:8px;left:8px;
-        display:none;flex-direction:row;gap:6px;z-index:9;
+        position:absolute;bottom:96px;left:12px;
+        display:none;flex-direction:row;gap:6px;z-index:25;
       }
-      .wrtc-stage.presenting .wrtc-thumbs{ display:flex; }
       .wrtc-thumb-tile{
         width:140px;height:79px;border-radius:8px;overflow:hidden;
         background:#3c4043;position:relative;flex-shrink:0;
@@ -501,20 +504,20 @@ class WebRTCMeetingAPI {
         background:rgba(0,0,0,.55);padding:2px 5px;border-radius:4px;
       }
 
-      /* ── WAITING ── */
+      /* ── WAITING (full-screen, shown when alone) ── */
       .wrtc-waiting{
-        position:absolute;inset:0;z-index:5;border-radius:inherit;
+        position:absolute;inset:0;z-index:20;background:#202124;
         display:none;flex-direction:column;align-items:center;justify-content:center;
-        gap:16px;color:rgba(255,255,255,.7);text-align:center;padding:40px;
+        gap:16px;color:rgba(255,255,255,.75);text-align:center;padding:40px;
       }
       .wrtc-waiting-ring{
-        width:48px;height:48px;border-radius:50%;
-        border:2px solid rgba(255,255,255,.15);border-top-color:rgba(255,255,255,.6);
-        animation:wrtc-spin 1.3s linear infinite;
+        width:60px;height:60px;border-radius:50%;
+        border:3px solid rgba(255,255,255,.12);border-top-color:#1a73e8;
+        animation:wrtc-spin 1s linear infinite;
       }
       @keyframes wrtc-spin{to{transform:rotate(360deg)}}
-      .wrtc-waiting p  {font-size:14px;font-weight:500}
-      .wrtc-waiting small{font-size:12px;opacity:.6}
+      .wrtc-waiting p  {font-size:16px;font-weight:500;margin-top:4px}
+      .wrtc-waiting small{font-size:13px;opacity:.55}
 
       /* ── PiP (hidden — local video is now a grid tile) ── */
       .wrtc-pip{ display:none; }
@@ -739,13 +742,14 @@ class WebRTCMeetingAPI {
             </div>
             <div class="wrtc-pip-hand" id="wrtc-pip-hand">✋</div>
             <div class="wrtc-tile-label" id="wrtc-pip-label"></div>
-            <!-- Waiting overlay — shown when alone -->
-            <div class="wrtc-waiting" id="wrtc-waiting">
-              <div class="wrtc-waiting-ring"></div>
-              <p>Waiting for others to join</p>
-              <small>Room: <strong id="wrtc-room-hint"></strong></small>
-            </div>
           </div>
+        </div>
+        <!-- Waiting overlay — full-screen, shown when alone in room -->
+        <div class="wrtc-waiting" id="wrtc-waiting">
+          <div class="wrtc-waiting-ring"></div>
+          <p>Waiting for others to join…</p>
+          <small>Share the room link to invite participants</small>
+          <small style="opacity:.35;font-size:11px">Room: <strong id="wrtc-room-hint"></strong></small>
         </div>
       </div>
 
@@ -999,6 +1003,8 @@ class WebRTCMeetingAPI {
         tile.style.display = "none";
       }
     });
+
+    thumbs.style.display = "flex";
   }
 
   _setLocalPresenter() {
@@ -1035,6 +1041,7 @@ class WebRTCMeetingAPI {
       this._addThumb(t, thumbs);
       t.style.display = "none";
     });
+    thumbs.style.display = "flex";
 
     // PiP switches back to camera so you can see yourself
     document.getElementById("wrtc-local-video").srcObject = this._localStream;
@@ -1060,7 +1067,9 @@ class WebRTCMeetingAPI {
   _clearPresenter() {
     document.getElementById("wrtc-local-share-tile")?.remove();
     document.getElementById("wrtc-stage")?.classList.remove("presenting");
-    document.getElementById("wrtc-thumbs").innerHTML = "";
+    const thumbs = document.getElementById("wrtc-thumbs");
+    thumbs.innerHTML = "";
+    thumbs.style.display = "none";
     document.querySelectorAll(".wrtc-tile").forEach(tile => {
       tile.classList.remove("presenter");
       tile.style.display = "";
@@ -1365,21 +1374,48 @@ class WebRTCMeetingAPI {
   // GRID LAYOUT
   // ═══════════════════════════════════════════════════════════════════════
   _updateGrid() {
-    const grid    = document.getElementById("wrtc-grid");
-    const waiting = document.getElementById("wrtc-waiting");
-    if (!grid) return;
+    const grid      = document.getElementById("wrtc-grid");
+    const waiting   = document.getElementById("wrtc-waiting");
+    const localTile = document.getElementById("wrtc-local-tile");
+    const stage     = document.getElementById("wrtc-stage");
+    if (!grid || !localTile || !stage) return;
+
     const remoteCount = Object.keys(this._peerConnections).length;
-    waiting.style.display = remoteCount === 0 ? "flex" : "none";
-    const total = remoteCount + 1; // +1 for local tile
-    let cols, rows;
-    if (total <= 1)       { cols = 1; rows = 1; }
-    else if (total === 2) { cols = 2; rows = 1; }
-    else if (total <= 4)  { cols = 2; rows = 2; }
-    else if (total <= 6)  { cols = 3; rows = 2; }
-    else if (total <= 9)  { cols = 3; rows = 3; }
-    else                  { cols = 4; rows = Math.ceil(total / 4); }
-    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-    grid.style.gridTemplateRows    = `repeat(${rows}, minmax(0, 1fr))`;
+
+    if (remoteCount === 0) {
+      // Alone — move local tile OUT of the hidden grid directly into stage
+      // (display:none on a parent hides fixed children too, so we must reparent)
+      if (localTile.parentElement !== stage) stage.appendChild(localTile);
+      localTile.style.position     = "fixed";
+      localTile.style.bottom       = "96px";
+      localTile.style.right        = "16px";
+      localTile.style.width        = "200px";
+      localTile.style.height       = "130px";
+      localTile.style.zIndex       = "30";
+      localTile.style.borderRadius = "12px";
+      localTile.style.boxShadow    = "0 4px 24px rgba(0,0,0,.7)";
+      localTile.style.border       = "2px solid rgba(255,255,255,.1)";
+      grid.style.display           = "none";
+      waiting.style.display        = "flex";
+    } else {
+      // Others present — move local tile back into the grid and reset styles
+      if (localTile.parentElement !== grid) grid.prepend(localTile);
+      localTile.style.cssText = "";
+      grid.style.display      = "";
+      waiting.style.display   = "none";
+      // Make sure local tile is first in the grid
+      if (grid.firstChild !== localTile) grid.prepend(localTile);
+
+      const total = remoteCount + 1;
+      let cols, rows;
+      if (total === 2)      { cols = 2; rows = 1; }
+      else if (total <= 4)  { cols = 2; rows = 2; }
+      else if (total <= 6)  { cols = 3; rows = 2; }
+      else if (total <= 9)  { cols = 3; rows = 3; }
+      else                  { cols = 4; rows = Math.ceil(total / 4); }
+      grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+      grid.style.gridTemplateRows    = `repeat(${rows}, minmax(0, 1fr))`;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1476,6 +1512,7 @@ class WebRTCMeetingAPI {
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
+        this._updateGrid();  // set initial solo/grid state
         break;
 
       case "join":
