@@ -123,7 +123,7 @@ def _get_token_type(token: str) -> str | None:
         return decode_token(token).get("type")
     except JWTError:
         return None
-_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting", "mute-all"}   # broadcast to whole room
+_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all"}
 _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 
@@ -393,7 +393,7 @@ async def signaling_endpoint(
     is_reconnect = websocket.query_params.get("reconnect") == "1"
     require_approval = meeting_settings.get("require_approval", True)
 
-    if is_guest and host_id is not None and not is_reconnect and require_approval:
+    if is_guest and not is_reconnect and require_approval:
         # Accept WS but hold guest in waiting room until host approves
         await websocket.accept()
         approval_event = manager.add_pending(room_id, user_id, websocket, guest_name)
@@ -408,13 +408,15 @@ async def signaling_endpoint(
             manager.remove_pending(room_id, user_id)
             return
 
-        # Notify host
-        await manager.send_personal(room_id, host_id, {
-            "type": "knock-request",
-            "from": "server",
-            "payload": {"guestId": user_id, "name": guest_name},
-        })
-        logger.info("Knock-to-join  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
+        # Notify host only if currently connected — otherwise re-sent when host joins
+        if host_id and manager.is_connected(room_id, host_id):
+            await manager.send_personal(room_id, host_id, {
+                "type": "knock-request",
+                "from": "server",
+                "payload": {"guestId": user_id, "name": guest_name},
+            })
+        logger.info("Knock-to-join  room=%s  guest=%s  name=%s  host_online=%s",
+                    room_id, user_id, guest_name, bool(host_id and manager.is_connected(room_id, host_id)))
 
         # Wait for host decision (2-min timeout)
         try:
@@ -611,6 +613,11 @@ async def signaling_endpoint(
                     logger.info("Meeting ended by host  room=%s  host=%s", room_id, user_id)
                     break  # host leaves after ending
                 continue
+
+            # ── host-only room broadcasts ──────────────────────────────────────
+            if msg_type in ("mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all"):
+                if not manager.is_host(room_id, user_id):
+                    continue  # silently drop — only host can send these
 
             # ── SFU messages ───────────────────────────────────────────────────
             if msg_type in _SFU_TYPES:

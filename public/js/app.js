@@ -74,6 +74,13 @@ class WebRTCMeetingAPI {
     this._isReconnecting = false;
     this._meetingStart   = null;
     this._settings       = {}; // meeting permissions from server
+
+    // Host-mute tracking (participants)
+    this._hostMutedMic  = false; // true = host muted my mic
+    this._hostMutedCam  = false; // true = host muted my cam
+    // Host bulk-action state (host side)
+    this._allMicsMuted  = false;
+    this._allCamsMuted  = false;
     this._clockTimer  = null;
     this._toastTimer  = null;
 
@@ -134,6 +141,17 @@ class WebRTCMeetingAPI {
       .then(stream => {
         this._localStream = stream;
         this._setupAudioAnalyser("local", stream);
+        // Restore cam/mic state from before the refresh
+        const savedMic = sessionStorage.getItem('wrtc_mic_' + this.roomName);
+        const savedCam = sessionStorage.getItem('wrtc_cam_' + this.roomName);
+        if (savedMic === '0') {
+          this._micEnabled = false;
+          stream.getAudioTracks().forEach(t => { t.enabled = false; });
+        }
+        if (savedCam === '0') {
+          this._camEnabled = false;
+          stream.getVideoTracks().forEach(t => { t.enabled = false; });
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -391,6 +409,15 @@ class WebRTCMeetingAPI {
     if (this._uiBuilt) return;
     this._uiBuilt = true;
     this._meetingStart = Date.now();
+    // Re-apply saved cam/mic state (handles cases where it may have been reset before UI builds)
+    if (sessionStorage.getItem('wrtc_mic_' + this.roomName) === '0') {
+      this._micEnabled = false;
+      this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
+    }
+    if (sessionStorage.getItem('wrtc_cam_' + this.roomName) === '0') {
+      this._camEnabled = false;
+      this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+    }
     this._buildUI();
     const localVid = document.getElementById("wrtc-local-video");
     if (localVid) localVid.srcObject = this._localStream;
@@ -413,9 +440,11 @@ class WebRTCMeetingAPI {
     const s = this._settings;
     const isHost = this._isHost;
 
-    // Mute-all button — host only (already hidden by default)
-    const muteAllBtn = document.getElementById("wrtc-btn-muteall");
-    if (muteAllBtn) muteAllBtn.style.display = isHost ? "" : "none";
+    // Host-only controls
+    ["wrtc-btn-muteall", "wrtc-btn-mutecams"].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.style.display = isHost ? "" : "none";
+    });
 
     // Chat — hide button and panel tab if disabled
     const chatBtn = document.getElementById("wrtc-btn-chat");
@@ -996,11 +1025,30 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
-        <!-- Mute All (host only) -->
-        <button class="wrtc-btn" id="wrtc-btn-muteall" title="Mute all participants" style="display:none">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16.5 12c0 1.77-1.02 3.29-2.5 4.06V8l2.5-2.5V12zM5 9v6h4l5 5V4L9 9H5zm11.5 0l-1.5 1.5V9h1.5zM19 12c0 2.25-1.17 4.23-2.94 5.38L17.5 18.8C19.76 17.28 21.25 14.8 21.25 12c0-2.8-1.49-5.28-3.75-6.8L16.06 6.62C17.83 7.77 19 9.75 19 12zm-8.5-8.5L8 6H4v12h4l2.5 2.5V3.5z"/>
+        <!-- Mute All Mics (host only, shown when mics not yet all muted) -->
+        <button class="wrtc-btn" id="wrtc-btn-muteall" title="Mute all microphones" style="display:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M16.5 12c0 1.77-1.02 3.29-2.5 4.06V8l2.5-2.5V12zM5 9v6h4l5 5V4L9 9H5zm11.5 0l-1.5 1.5V9h1.5z"/>
             <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2.2"/>
+          </svg>
+        </button>
+        <!-- Unmute All Mics (host only, shown after muting all) -->
+        <button class="wrtc-btn" id="wrtc-btn-unmuteall" title="Unmute all microphones" style="display:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+          </svg>
+        </button>
+        <!-- Mute All Cams (host only, shown when cams not yet all muted) -->
+        <button class="wrtc-btn" id="wrtc-btn-mutecams" title="Mute all cameras" style="display:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2.2"/>
+          </svg>
+        </button>
+        <!-- Unmute All Cams (host only, shown after muting all cams) -->
+        <button class="wrtc-btn" id="wrtc-btn-unmutecams" title="Unmute all cameras" style="display:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
           </svg>
         </button>
 
@@ -1026,8 +1074,32 @@ class WebRTCMeetingAPI {
       ? this._myName.slice(0, 2).toUpperCase() : "YO";
     document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
     document.getElementById("wrtc-btn-muteall").addEventListener("click", () => {
+      this._allMicsMuted = true;
       this._sendWS({ type: "mute-all", payload: {} });
-      this._toast("All participants have been muted");
+      document.getElementById("wrtc-btn-muteall").style.display   = "none";
+      document.getElementById("wrtc-btn-unmuteall").style.display = "";
+      this._toast("All microphones muted");
+    });
+    document.getElementById("wrtc-btn-unmuteall").addEventListener("click", () => {
+      this._allMicsMuted = false;
+      this._sendWS({ type: "unmute-all", payload: {} });
+      document.getElementById("wrtc-btn-unmuteall").style.display = "none";
+      document.getElementById("wrtc-btn-muteall").style.display   = "";
+      this._toast("All microphones unmuted");
+    });
+    document.getElementById("wrtc-btn-mutecams").addEventListener("click", () => {
+      this._allCamsMuted = true;
+      this._sendWS({ type: "cam-mute-all", payload: {} });
+      document.getElementById("wrtc-btn-mutecams").style.display   = "none";
+      document.getElementById("wrtc-btn-unmutecams").style.display = "";
+      this._toast("All cameras muted");
+    });
+    document.getElementById("wrtc-btn-unmutecams").addEventListener("click", () => {
+      this._allCamsMuted = false;
+      this._sendWS({ type: "cam-unmute-all", payload: {} });
+      document.getElementById("wrtc-btn-unmutecams").style.display = "none";
+      document.getElementById("wrtc-btn-mutecams").style.display   = "";
+      this._toast("All cameras unmuted");
     });
     document.getElementById("wrtc-btn-mic").addEventListener("click",   () => this._toggleMic());
     document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
@@ -1095,13 +1167,15 @@ class WebRTCMeetingAPI {
   // MIC / CAM
   // ═══════════════════════════════════════════════════════════════════════
   _toggleMic() {
-    // If participant was muted and allow_unmute_self is off, block unmuting
     if (!this._micEnabled && !this._isHost && this._settings.allow_unmute_self === false) {
       this._toast("The host has disabled self-unmuting");
       return;
     }
+    // Clear host-muted flag when user manually unmutes themselves
+    if (!this._micEnabled && this._hostMutedMic) this._hostMutedMic = false;
     this._micEnabled = !this._micEnabled;
     this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
+    sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-mic").classList.toggle("muted", !this._micEnabled);
     document.getElementById("wrtc-ico-mic").style.display     = this._micEnabled ? "" : "none";
     document.getElementById("wrtc-ico-mic-off").style.display = this._micEnabled ? "none" : "";
@@ -1109,8 +1183,14 @@ class WebRTCMeetingAPI {
   }
 
   _toggleCam() {
+    if (!this._camEnabled && !this._isHost && this._settings.allow_unmute_self === false) {
+      this._toast("The host has disabled self-unmuting");
+      return;
+    }
+    if (!this._camEnabled && this._hostMutedCam) this._hostMutedCam = false;
     this._camEnabled = !this._camEnabled;
     this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
+    sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-cam").classList.toggle("muted", !this._camEnabled);
     document.getElementById("wrtc-ico-cam").style.display     = this._camEnabled ? "" : "none";
     document.getElementById("wrtc-ico-cam-off").style.display = this._camEnabled ? "none" : "";
@@ -1891,9 +1971,17 @@ class WebRTCMeetingAPI {
       case "host-changed": {
         const wasHost = this._isHost;
         this._isHost = (payload.hostId === this._myUserId);
-        const muteAllBtn = document.getElementById("wrtc-btn-muteall");
-        if (muteAllBtn) muteAllBtn.style.display = this._isHost ? "" : "none";
-        this._renderParticipants(); // re-render to add/remove Remove buttons
+        // Show/hide host controls; reset toggle state on role change
+        ["wrtc-btn-muteall", "wrtc-btn-mutecams"].forEach(id => {
+          const btn = document.getElementById(id);
+          if (btn) btn.style.display = this._isHost ? "" : "none";
+        });
+        ["wrtc-btn-unmuteall", "wrtc-btn-unmutecams"].forEach(id => {
+          const btn = document.getElementById(id);
+          if (btn) btn.style.display = "none";
+        });
+        if (this._isHost) { this._allMicsMuted = false; this._allCamsMuted = false; }
+        this._renderParticipants();
         if (!wasHost && this._isHost) this._toast("You are now the host");
         break;
       }
@@ -1902,6 +1990,8 @@ class WebRTCMeetingAPI {
         this._isLeaving = true;
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
+        sessionStorage.removeItem("wrtc_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_cam_" + this.roomName);
         this._ws?.close();
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
@@ -2028,13 +2118,53 @@ class WebRTCMeetingAPI {
       case "error": this._log("Server error: " + payload.detail, undefined, "error"); break;
 
       case "mute-all":
-        if (!this._micEnabled) break; // already muted
+        if (!this._micEnabled) break; // already off by participant — host mute doesn't own it
+        this._hostMutedMic = true;
         this._micEnabled = false;
         this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
         document.getElementById("wrtc-btn-mic")?.classList.add("muted");
-        if (document.getElementById("wrtc-ico-mic"))  document.getElementById("wrtc-ico-mic").style.display  = "none";
+        if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "none";
         if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "";
-        this._toast("You were muted by the host");
+        this._toast("Your microphone was muted by the host");
+        break;
+
+      case "unmute-all":
+        if (!this._hostMutedMic) break; // host didn't mute me — don't force unmute
+        this._hostMutedMic = false;
+        if (this._micEnabled) break; // already on
+        this._micEnabled = true;
+        this._localStream?.getAudioTracks().forEach(t => { t.enabled = true; });
+        document.getElementById("wrtc-btn-mic")?.classList.remove("muted");
+        if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "";
+        if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "none";
+        this._toast("Your microphone was unmuted by the host");
+        break;
+
+      case "cam-mute-all":
+        if (!this._camEnabled) break; // already off by participant — host mute doesn't own it
+        this._hostMutedCam = true;
+        this._camEnabled = false;
+        this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+        document.getElementById("wrtc-btn-cam")?.classList.add("muted");
+        if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "none";
+        if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "";
+        if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "none";
+        if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "flex";
+        this._toast("Your camera was muted by the host");
+        break;
+
+      case "cam-unmute-all":
+        if (!this._hostMutedCam) break;
+        this._hostMutedCam = false;
+        if (this._camEnabled) break;
+        this._camEnabled = true;
+        this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
+        document.getElementById("wrtc-btn-cam")?.classList.remove("muted");
+        if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "";
+        if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "none";
+        if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "block";
+        if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "none";
+        this._toast("Your camera was unmuted by the host");
         break;
 
       case "you-were-kicked":
@@ -2043,6 +2173,8 @@ class WebRTCMeetingAPI {
         // Clear session so rejoin goes through approval again, not reconnect bypass
         sessionStorage.removeItem('wrtc_name_' + this.roomName);
         sessionStorage.removeItem('meet_session_' + this.roomName);
+        sessionStorage.removeItem('wrtc_mic_' + this.roomName);
+        sessionStorage.removeItem('wrtc_cam_' + this.roomName);
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
           + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
@@ -2263,6 +2395,8 @@ class WebRTCMeetingAPI {
       'border-top:4px solid #ea4335;border-radius:50%;animation:wrtc-spin2 1s linear infinite;"></div>' +
       '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Leaving…</p>' +
       '</div>';
+    sessionStorage.removeItem('wrtc_mic_' + this.roomName);
+    sessionStorage.removeItem('wrtc_cam_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
