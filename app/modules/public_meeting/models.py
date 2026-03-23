@@ -30,3 +30,11 @@ class PublicMeeting(Base):
         nullable=True,
         index=True,
     )
+
+    # ── Participant permissions ───────────────────────────────────────────────
+    require_approval: Mapped[bool]             = mapped_column(Boolean, default=True,  nullable=False)
+    allow_participants_see_others: Mapped[bool] = mapped_column(Boolean, default=True,  nullable=False)
+    allow_participant_admit: Mapped[bool]       = mapped_column(Boolean, default=False, nullable=False)
+    allow_chat: Mapped[bool]                   = mapped_column(Boolean, default=True,  nullable=False)
+    allow_screen_share: Mapped[bool]           = mapped_column(Boolean, default=True,  nullable=False)
+    allow_unmute_self: Mapped[bool]            = mapped_column(Boolean, default=True,  nullable=False)

@@ -40,6 +40,7 @@ async def create_meeting(
         name=payload.name,
         db=db,
         user_id=current_user.id if current_user else None,
+        perms=payload.settings,
     )
 
 

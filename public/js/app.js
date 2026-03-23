@@ -73,6 +73,7 @@ class WebRTCMeetingAPI {
     this._uiBuilt       = false;
     this._isReconnecting = false;
     this._meetingStart   = null;
+    this._settings       = {}; // meeting permissions from server
     this._clockTimer  = null;
     this._toastTimer  = null;
 
@@ -406,6 +407,41 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-mic-off").style.display = "";
     }
     this._startSpeakerDetection();
+  }
+
+  _applySettings() {
+    const s = this._settings;
+    const isHost = this._isHost;
+
+    // Mute-all button — host only (already hidden by default)
+    const muteAllBtn = document.getElementById("wrtc-btn-muteall");
+    if (muteAllBtn) muteAllBtn.style.display = isHost ? "" : "none";
+
+    // Chat — hide button and panel tab if disabled
+    const chatBtn = document.getElementById("wrtc-btn-chat");
+    const chatTab = document.getElementById("wrtc-tab-chat");
+    const chatContent = document.getElementById("wrtc-chat-content");
+    if (!isHost && s.allow_chat === false) {
+      if (chatBtn) chatBtn.style.display = "none";
+      if (chatTab) chatTab.style.display = "none";
+      if (chatContent) chatContent.style.display = "none";
+    }
+
+    // Screen share — hide button if disabled
+    const shareBtn = document.getElementById("wrtc-btn-share");
+    if (!isHost && s.allow_screen_share === false) {
+      if (shareBtn) shareBtn.style.display = "none";
+    }
+
+    // Participants list — hide people panel tab if disabled
+    const peopleBtn = document.getElementById("wrtc-btn-people");
+    const peopleTab = document.getElementById("wrtc-tab-people");
+    const peopleContent = document.getElementById("wrtc-people-content");
+    if (!isHost && s.allow_participants_see_others === false) {
+      if (peopleBtn) peopleBtn.style.display = "none";
+      if (peopleTab) peopleTab.style.display = "none";
+      if (peopleContent) peopleContent.style.display = "none";
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1059,6 +1095,11 @@ class WebRTCMeetingAPI {
   // MIC / CAM
   // ═══════════════════════════════════════════════════════════════════════
   _toggleMic() {
+    // If participant was muted and allow_unmute_self is off, block unmuting
+    if (!this._micEnabled && !this._isHost && this._settings.allow_unmute_self === false) {
+      this._toast("The host has disabled self-unmuting");
+      return;
+    }
     this._micEnabled = !this._micEnabled;
     this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
     document.getElementById("wrtc-btn-mic").classList.toggle("muted", !this._micEnabled);
@@ -1824,13 +1865,11 @@ class WebRTCMeetingAPI {
     switch (type) {
 
       case "user-list":
-        this._myUserId = payload.myId || null;
-        this._isHost   = payload.isHost || false;
+        this._myUserId  = payload.myId || null;
+        this._isHost    = payload.isHost || false;
+        this._settings  = payload.settings || {};
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
-        if (this._isHost) {
-          const muteAllBtn = document.getElementById("wrtc-btn-muteall");
-          if (muteAllBtn) muteAllBtn.style.display = "";
-        }
+        this._applySettings();
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
@@ -1849,9 +1888,30 @@ class WebRTCMeetingAPI {
         await this._initiateOffer(payload.user_id);
         break;
 
-      case "host-changed":
+      case "host-changed": {
+        const wasHost = this._isHost;
         this._isHost = (payload.hostId === this._myUserId);
-        if (this._isHost) this._toast("You are now the host");
+        const muteAllBtn = document.getElementById("wrtc-btn-muteall");
+        if (muteAllBtn) muteAllBtn.style.display = this._isHost ? "" : "none";
+        this._renderParticipants(); // re-render to add/remove Remove buttons
+        if (!wasHost && this._isHost) this._toast("You are now the host");
+        break;
+      }
+
+      case "meeting-ended":
+        this._isLeaving = true;
+        sessionStorage.removeItem("wrtc_name_" + this.roomName);
+        sessionStorage.removeItem("meet_session_" + this.roomName);
+        this._ws?.close();
+        this.parentNode.innerHTML =
+          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+          'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">' +
+          '<div style="font-size:56px;">📴</div>' +
+          '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">Meeting ended</p>' +
+          '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;">The host has ended this meeting.</p>' +
+          '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;' +
+          'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>' +
+          '</div>';
         break;
 
       case "leave": {
@@ -2137,6 +2197,62 @@ class WebRTCMeetingAPI {
   // PUBLIC: hangup
   // ═══════════════════════════════════════════════════════════════════════
   hangup() {
+    // Host gets a leave modal to transfer host or end the meeting
+    if (this._isHost && Object.keys(this._participants).length > 0) {
+      this._showHostLeaveModal();
+      return;
+    }
+    this._doLeave();
+  }
+
+  _showHostLeaveModal() {
+    if (document.getElementById("wrtc-host-leave-modal")) return;
+    const participants = Object.entries(this._participants);
+    const opts = participants.map(([uid, name]) =>
+      '<option value="' + uid + '">' + (name || "Guest") + "</option>"
+    ).join("");
+
+    const overlay = document.createElement("div");
+    overlay.id = "wrtc-host-leave-modal";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);" +
+      "display:flex;align-items:center;justify-content:center;font-family:sans-serif;";
+    overlay.innerHTML =
+      '<div style="background:#2d2e31;border-radius:16px;padding:32px;max-width:380px;width:90%;' +
+      'box-shadow:0 8px 40px rgba(0,0,0,.5);">' +
+      '<h3 style="color:#e8eaed;font-size:18px;font-weight:600;margin:0 0 8px;">Leave meeting</h3>' +
+      '<p style="color:#9aa0a6;font-size:13px;margin:0 0 20px;">You are the host. Choose what happens when you leave.</p>' +
+      '<label style="color:#9aa0a6;font-size:12px;font-weight:500;display:block;margin-bottom:6px;">Transfer host to</label>' +
+      '<select id="wrtc-transfer-select" style="width:100%;margin-bottom:20px;padding:10px 12px;' +
+      'background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.15);border-radius:8px;' +
+      'color:#e8eaed;font-size:14px;">' + opts + '</select>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;">' +
+      '<button id="wrtc-transfer-btn" style="background:#1a73e8;color:#fff;border:none;border-radius:10px;' +
+      'padding:12px;font-size:14px;font-weight:500;cursor:pointer;">Transfer &amp; Leave</button>' +
+      '<button id="wrtc-end-meeting-btn" style="background:rgba(234,67,53,.12);color:#ea4335;' +
+      'border:1px solid rgba(234,67,53,.35);border-radius:10px;padding:12px;font-size:14px;' +
+      'font-weight:500;cursor:pointer;">End meeting for all</button>' +
+      '<button id="wrtc-cancel-leave-btn" style="background:transparent;color:#9aa0a6;' +
+      'border:1.5px solid rgba(255,255,255,.15);border-radius:10px;padding:12px;font-size:14px;' +
+      'font-weight:500;cursor:pointer;">Cancel</button>' +
+      '</div></div>';
+    document.body.appendChild(overlay);
+
+    document.getElementById("wrtc-transfer-btn").addEventListener("click", () => {
+      const uid = document.getElementById("wrtc-transfer-select").value;
+      if (uid) this._sendWS({ type: "transfer-host", payload: { userId: uid } });
+      overlay.remove();
+      this._doLeave();
+    });
+    document.getElementById("wrtc-end-meeting-btn").addEventListener("click", () => {
+      this._sendWS({ type: "end-meeting", payload: {} });
+      overlay.remove();
+      this._doLeave();
+    });
+    document.getElementById("wrtc-cancel-leave-btn").addEventListener("click", () => overlay.remove());
+  }
+
+  _doLeave() {
     this._isLeaving = true;
     // Replace parentNode content with leaving overlay so it's removed when React navigates
     this.parentNode.innerHTML =

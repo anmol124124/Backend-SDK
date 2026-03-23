@@ -94,6 +94,7 @@ from app.modules.auth.models import User
 from app.modules.meeting.connection_manager import manager
 from app.modules.meeting.models import Meeting, Participant
 from app.modules.project.embed_check import check_embed_domain
+from app.modules.public_meeting.models import PublicMeeting
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Signaling"])
@@ -109,7 +110,7 @@ _SFU_TYPES = {                                       # handled by mediasoup
     "sfu:resumeConsumer",
     "sfu:getProducers",
 }
-_CTRL_TYPES  = {"leave", "knock-approve", "knock-deny", "kick"}
+_CTRL_TYPES  = {"leave", "knock-approve", "knock-deny", "kick", "transfer-host", "end-meeting"}
 
 
 def _get_token_type(token: str) -> str | None:
@@ -361,16 +362,38 @@ async def signaling_endpoint(
     # tabs/devices without overwriting their own slot in the connection manager
     user_id = str(user.id) + "_" + str(uuid.uuid4())[:8]
 
-    # ── Step 4: knock-to-join for public guests (if host already in room) ───────
+    # ── Step 4: load meeting settings (public meetings only) ──────────────────
     token_type  = _get_token_type(token)
     is_guest    = token_type == "public_guest"
+    is_public   = token_type in ("public_guest", "public_host")
+
+    meeting_settings: dict = {}
+    if is_public:
+        async with AsyncSessionLocal() as db:
+            pm = (
+                await db.execute(
+                    select(PublicMeeting).where(PublicMeeting.room_code == room_id)
+                )
+            ).scalar_one_or_none()
+            if pm:
+                meeting_settings = {
+                    "require_approval":             pm.require_approval,
+                    "allow_participants_see_others": pm.allow_participants_see_others,
+                    "allow_participant_admit":       pm.allow_participant_admit,
+                    "allow_chat":                   pm.allow_chat,
+                    "allow_screen_share":           pm.allow_screen_share,
+                    "allow_unmute_self":            pm.allow_unmute_self,
+                }
+
+    # ── Step 5: knock-to-join for public guests (if host already in room) ───────
     # Prefer the name the guest typed in the lobby (sent as WS query param)
     guest_name  = websocket.query_params.get("name") or getattr(user, "name", None) or "Guest"
     host_id     = manager.get_host(room_id)
 
     is_reconnect = websocket.query_params.get("reconnect") == "1"
+    require_approval = meeting_settings.get("require_approval", True)
 
-    if is_guest and host_id is not None and not is_reconnect:
+    if is_guest and host_id is not None and not is_reconnect and require_approval:
         # Accept WS but hold guest in waiting room until host approves
         await websocket.accept()
         approval_event = manager.add_pending(room_id, user_id, websocket, guest_name)
@@ -430,12 +453,17 @@ async def signaling_endpoint(
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 
-    # Public-host token always reclaims host (handles refresh + reinstatement after transfer)
+    # Public-host token always reclaims host (handles refresh + reinstatement)
     if token_type == "public_host":
+        # First time this meeting has a host — record as permanent host
+        if manager.get_permanent_host(room_id) is None:
+            manager.set_permanent_host(room_id, user_id)
+        # Cancel any pending grace period (host reconnected in time)
+        manager.cancel_host_grace(room_id)
         prev_host = manager.get_host(room_id)
         manager.set_host(room_id, user_id)
         if prev_host and prev_host != user_id:
-            # A different user was acting as host (e.g. after auto-transfer) — update everyone
+            # Notify everyone that host is back (in case UI showed someone else as host)
             await manager.broadcast_to_room(
                 room_id,
                 {"type": "host-changed", "from": "server", "payload": {"hostId": user_id}},
@@ -472,6 +500,7 @@ async def signaling_endpoint(
                 "sfuAvailable": sfu_available,
                 "myId": user_id,
                 "isHost": manager.is_host(room_id, user_id),
+                "settings": meeting_settings,
             },
         },
     )
@@ -529,9 +558,10 @@ async def signaling_endpoint(
             if msg_type == "leave":
                 break
 
-            # ── knock approval (host only) ─────────────────────────────────────
+            # ── knock approval (host, or participants if setting allows) ──────────
             if msg_type in ("knock-approve", "knock-deny"):
-                if manager.is_host(room_id, user_id):
+                can_admit = manager.is_host(room_id, user_id) or meeting_settings.get("allow_participant_admit", False)
+                if can_admit:
                     guest_id = payload.get("guestId")
                     if guest_id:
                         approved = (msg_type == "knock-approve")
@@ -552,6 +582,34 @@ async def signaling_endpoint(
                             {"type": "you-were-kicked", "from": "server", "payload": {}},
                         )
                         logger.info("Kick  room=%s  target=%s  by_host=%s", room_id, target_id, user_id)
+                continue
+
+            # ── transfer-host (host only) ──────────────────────────────────────
+            if msg_type == "transfer-host":
+                if manager.is_host(room_id, user_id):
+                    new_host_id = payload.get("userId")
+                    if new_host_id and manager.is_connected(room_id, new_host_id):
+                        manager.set_host(room_id, new_host_id)
+                        manager.set_permanent_host(room_id, new_host_id)
+                        manager.cancel_host_grace(room_id)
+                        await manager.broadcast_to_room(
+                            room_id,
+                            {"type": "host-changed", "from": "server", "payload": {"hostId": new_host_id}},
+                        )
+                        logger.info("Host transferred  room=%s  from=%s  to=%s", room_id, user_id, new_host_id)
+                continue
+
+            # ── end-meeting (host only) ────────────────────────────────────────
+            if msg_type == "end-meeting":
+                if manager.is_host(room_id, user_id):
+                    await manager.broadcast_to_room(
+                        room_id,
+                        {"type": "meeting-ended", "from": "server", "payload": {"reason": "Meeting ended by host"}},
+                    )
+                    for pid in manager.get_pending_ids(room_id):
+                        manager.resolve_pending(room_id, pid, False)
+                    logger.info("Meeting ended by host  room=%s  host=%s", room_id, user_id)
+                    break  # host leaves after ending
                 continue
 
             # ── SFU messages ───────────────────────────────────────────────────
@@ -580,7 +638,6 @@ async def signaling_endpoint(
         # ── Step 9: cleanup ───────────────────────────────────────────────────
         # Check host status before disconnecting
         was_host = manager.is_host(room_id, user_id)
-        next_host = manager.next_in_room(room_id, user_id) if was_host else None
 
         manager.disconnect(room_id, user_id)
 
@@ -596,13 +653,19 @@ async def signaling_endpoint(
             {"type": "leave", "from": user_id, "payload": {"user_id": user_id}},
         )
 
-        # Transfer host to next participant if host left
-        if was_host and next_host:
-            manager.set_host(room_id, next_host)
-            await manager.broadcast_to_room(
-                room_id,
-                {"type": "host-changed", "from": "server", "payload": {"hostId": next_host}},
-            )
-            logger.info("Host transferred  meeting=%s  new_host=%s", room_id, next_host)
+        # If the permanent host left, start a 60-second grace period.
+        # If they reconnect in time, cancel it. Otherwise, end the meeting.
+        if was_host and manager.is_permanent_host(room_id, user_id) and manager.room_size(room_id) > 0:
+            async def _end_meeting_after_grace():
+                logger.info("Grace period expired  room=%s  host=%s", room_id, user_id)
+                await manager.broadcast_to_room(
+                    room_id,
+                    {"type": "meeting-ended", "from": "server",
+                     "payload": {"reason": "Host did not return"}},
+                )
+                for pid in manager.get_pending_ids(room_id):
+                    manager.resolve_pending(room_id, pid, False)
+            manager.start_host_grace(room_id, _end_meeting_after_grace, timeout=60)
+            logger.info("Host absent — grace period started  room=%s", room_id)
 
         logger.info("WS cleanup done  meeting=%s  user=%s", room_id, user_id)

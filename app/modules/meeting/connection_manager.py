@@ -30,6 +30,10 @@ class ConnectionManager:
         self._room_join_order: dict[str, list[str]] = defaultdict(list)
         # current host per room
         self._room_hosts: dict[str, str] = {}
+        # permanent host — set by public_host token, only changed on explicit transfer
+        self._permanent_hosts: dict[str, str] = {}
+        # grace period asyncio tasks (host absent → end meeting after timeout)
+        self._grace_tasks: dict[str, asyncio.Task] = {}
         # pending guests waiting for host approval
         # room_id → { user_id → { ws, name, event, approved } }
         self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -93,6 +97,8 @@ class ConnectionManager:
             self._rooms.pop(meeting_id, None)
             self._room_join_order.pop(meeting_id, None)
             self._room_hosts.pop(meeting_id, None)
+            self._permanent_hosts.pop(meeting_id, None)
+            self.cancel_host_grace(meeting_id)
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
 
     # ── Host management ───────────────────────────────────────────────────────
@@ -105,6 +111,33 @@ class ConnectionManager:
 
     def is_host(self, meeting_id: str, user_id: str) -> bool:
         return self._room_hosts.get(meeting_id) == user_id
+
+    # ── Permanent host (meeting creator) ──────────────────────────────────────
+
+    def set_permanent_host(self, meeting_id: str, user_id: str) -> None:
+        """Set the permanent host (meeting creator). Only changes on explicit transfer."""
+        self._permanent_hosts[meeting_id] = user_id
+
+    def get_permanent_host(self, meeting_id: str) -> str | None:
+        return self._permanent_hosts.get(meeting_id)
+
+    def is_permanent_host(self, meeting_id: str, user_id: str) -> bool:
+        return self._permanent_hosts.get(meeting_id) == user_id
+
+    # ── Grace period (host absent) ─────────────────────────────────────────────
+
+    def start_host_grace(self, meeting_id: str, on_expire_coro, timeout: int = 60) -> None:
+        """Start a grace period. If host doesn't reconnect within timeout, on_expire_coro is called."""
+        self.cancel_host_grace(meeting_id)
+        async def _task():
+            await asyncio.sleep(timeout)
+            await on_expire_coro()
+        self._grace_tasks[meeting_id] = asyncio.create_task(_task())
+
+    def cancel_host_grace(self, meeting_id: str) -> None:
+        task = self._grace_tasks.pop(meeting_id, None)
+        if task and not task.done():
+            task.cancel()
 
     def next_in_room(self, meeting_id: str, exclude_user_id: str) -> str | None:
         """Return the next user in join order, skipping exclude_user_id."""

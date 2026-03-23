@@ -21,6 +21,7 @@ from app.modules.public_meeting.schemas import (
     CreateMeetingResponse,
     MeetingInfoResponse,
     MeetingListItem,
+    MeetingSettings,
     TokenResponse,
 )
 
@@ -38,7 +39,11 @@ async def create_meeting(
     name: str,
     db: AsyncSession,
     user_id: Optional[_uuid.UUID] = None,
+    perms: Optional[MeetingSettings] = None,
 ) -> CreateMeetingResponse:
+    if perms is None:
+        perms = MeetingSettings()
+
     # Ensure room code is unique (retry up to 5 times — collision extremely unlikely)
     for _ in range(5):
         code = _generate_room_code()
@@ -50,7 +55,17 @@ async def create_meeting(
     else:
         raise HTTPException(status_code=500, detail="Could not generate unique room code")
 
-    meeting = PublicMeeting(room_code=code, name=name, created_by=user_id)
+    meeting = PublicMeeting(
+        room_code=code,
+        name=name,
+        created_by=user_id,
+        require_approval=perms.require_approval,
+        allow_participants_see_others=perms.allow_participants_see_others,
+        allow_participant_admit=perms.allow_participant_admit,
+        allow_chat=perms.allow_chat,
+        allow_screen_share=perms.allow_screen_share,
+        allow_unmute_self=perms.allow_unmute_self,
+    )
     db.add(meeting)
     await db.commit()
     await db.refresh(meeting)
@@ -94,6 +109,14 @@ async def get_meeting(room_code: str, db: AsyncSession) -> MeetingInfoResponse:
         room_code=meeting.room_code,
         name=meeting.name,
         is_active=meeting.is_active,
+        settings=MeetingSettings(
+            require_approval=meeting.require_approval,
+            allow_participants_see_others=meeting.allow_participants_see_others,
+            allow_participant_admit=meeting.allow_participant_admit,
+            allow_chat=meeting.allow_chat,
+            allow_screen_share=meeting.allow_screen_share,
+            allow_unmute_self=meeting.allow_unmute_self,
+        ),
     )
 
 
