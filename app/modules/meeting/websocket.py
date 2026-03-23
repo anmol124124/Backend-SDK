@@ -75,6 +75,8 @@ Connection URL:
 }
 """
 
+
+import asyncio
 import json
 import logging
 import uuid
@@ -107,8 +109,20 @@ _SFU_TYPES = {                                       # handled by mediasoup
     "sfu:resumeConsumer",
     "sfu:getProducers",
 }
-_CTRL_TYPES  = {"leave"}
-_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting"}   # broadcast to whole room
+_CTRL_TYPES  = {"leave", "knock-approve", "knock-deny", "kick"}
+
+
+def _get_token_type(token: str) -> str | None:
+    """Return token type: 'public_host', 'public_guest', 'access', or None."""
+    try:
+        return decode_public_token(token).get("type")
+    except JWTError:
+        pass
+    try:
+        return decode_token(token).get("type")
+    except JWTError:
+        return None
+_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting", "mute-all"}   # broadcast to whole room
 _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 
@@ -347,11 +361,87 @@ async def signaling_endpoint(
     # tabs/devices without overwriting their own slot in the connection manager
     user_id = str(user.id) + "_" + str(uuid.uuid4())[:8]
 
-    # ── Step 4: accept & register ─────────────────────────────────────────────
-    await manager.connect(room_id, user_id, websocket)
+    # ── Step 4: knock-to-join for public guests (if host already in room) ───────
+    token_type  = _get_token_type(token)
+    is_guest    = token_type == "public_guest"
+    # Prefer the name the guest typed in the lobby (sent as WS query param)
+    guest_name  = websocket.query_params.get("name") or getattr(user, "name", None) or "Guest"
+    host_id     = manager.get_host(room_id)
 
-    # First person to join becomes host
-    if manager.get_host(room_id) is None:
+    is_reconnect = websocket.query_params.get("reconnect") == "1"
+
+    if is_guest and host_id is not None and not is_reconnect:
+        # Accept WS but hold guest in waiting room until host approves
+        await websocket.accept()
+        approval_event = manager.add_pending(room_id, user_id, websocket, guest_name)
+
+        try:
+            await websocket.send_json({
+                "type": "knock-waiting",
+                "from": "server",
+                "payload": {"name": guest_name},
+            })
+        except Exception:
+            manager.remove_pending(room_id, user_id)
+            return
+
+        # Notify host
+        await manager.send_personal(room_id, host_id, {
+            "type": "knock-request",
+            "from": "server",
+            "payload": {"guestId": user_id, "name": guest_name},
+        })
+        logger.info("Knock-to-join  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
+
+        # Wait for host decision (2-min timeout)
+        try:
+            await asyncio.wait_for(approval_event.wait(), timeout=120)
+        except asyncio.TimeoutError:
+            manager.remove_pending(room_id, user_id)
+            try:
+                await websocket.send_json({
+                    "type": "knock-denied",
+                    "from": "server",
+                    "payload": {"reason": "Request timed out"},
+                })
+                await websocket.close()
+            except Exception:
+                pass
+            return
+
+        pending_data = manager.get_pending(room_id, user_id)
+        manager.remove_pending(room_id, user_id)
+
+        if not pending_data or not pending_data.get("approved"):
+            try:
+                await websocket.send_json({
+                    "type": "knock-denied",
+                    "from": "server",
+                    "payload": {"reason": "The host declined your request to join"},
+                })
+                await websocket.close()
+            except Exception:
+                pass
+            return
+
+        # Approved — add to active room
+        manager.add_to_room(room_id, user_id, websocket)
+    else:
+        # Host / direct join / nobody in room yet
+        await manager.connect(room_id, user_id, websocket)
+
+    # Public-host token always reclaims host (handles refresh + reinstatement after transfer)
+    if token_type == "public_host":
+        prev_host = manager.get_host(room_id)
+        manager.set_host(room_id, user_id)
+        if prev_host and prev_host != user_id:
+            # A different user was acting as host (e.g. after auto-transfer) — update everyone
+            await manager.broadcast_to_room(
+                room_id,
+                {"type": "host-changed", "from": "server", "payload": {"hostId": user_id}},
+                exclude_user_id=user_id,
+            )
+    elif manager.get_host(room_id) is None:
         manager.set_host(room_id, user_id)
 
     # ── Step 5: initialise SFU room + send capabilities ───────────────────────
@@ -367,7 +457,6 @@ async def signaling_endpoint(
             },
         )
     except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-        # SFU down → signaling still works; media won't be available
         sfu_available = False
         logger.error("Could not reach mediasoup on join  room=%s  error=%s", room_id, exc)
 
@@ -393,6 +482,17 @@ async def signaling_endpoint(
         {"type": "join", "from": user_id, "payload": {"user_id": user_id}},
         exclude_user_id=user_id,
     )
+
+    # Re-send any pending knock requests to the host (handles host refresh)
+    if manager.is_host(room_id, user_id):
+        for pending_uid in manager.get_pending_ids(room_id):
+            pending = manager.get_pending(room_id, pending_uid)
+            if pending:
+                await manager.send_personal(room_id, user_id, {
+                    "type": "knock-request",
+                    "from": "server",
+                    "payload": {"guestId": pending_uid, "name": pending["name"]},
+                })
 
     # ── Step 8: message loop ──────────────────────────────────────────────────
     try:
@@ -428,6 +528,31 @@ async def signaling_endpoint(
             # ── leave ──────────────────────────────────────────────────────────
             if msg_type == "leave":
                 break
+
+            # ── knock approval (host only) ─────────────────────────────────────
+            if msg_type in ("knock-approve", "knock-deny"):
+                if manager.is_host(room_id, user_id):
+                    guest_id = payload.get("guestId")
+                    if guest_id:
+                        approved = (msg_type == "knock-approve")
+                        manager.resolve_pending(room_id, guest_id, approved)
+                        logger.info(
+                            "Knock %s  room=%s  guest=%s  by_host=%s",
+                            "approved" if approved else "denied", room_id, guest_id, user_id,
+                        )
+                continue
+
+            # ── kick (host only) ───────────────────────────────────────────────
+            if msg_type == "kick":
+                if manager.is_host(room_id, user_id):
+                    target_id = payload.get("userId")
+                    if target_id and manager.is_connected(room_id, target_id):
+                        await manager.send_personal(
+                            room_id, target_id,
+                            {"type": "you-were-kicked", "from": "server", "payload": {}},
+                        )
+                        logger.info("Kick  room=%s  target=%s  by_host=%s", room_id, target_id, user_id)
+                continue
 
             # ── SFU messages ───────────────────────────────────────────────────
             if msg_type in _SFU_TYPES:

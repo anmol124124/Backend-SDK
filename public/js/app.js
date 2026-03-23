@@ -1,6 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
 // WebRTCMeetingAPI — embeddable WebRTC meeting SDK
 // ═══════════════════════════════════════════════════════════════════════════
+(function () {
+if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
   constructor({ serverUrl, roomName, token = "", parentNode, onLeave = null }) {
@@ -67,6 +69,10 @@ class WebRTCMeetingAPI {
     this._panelTab      = null; // "people" | "chat" | null
 
     // Misc
+    this._isLeaving     = false;
+    this._uiBuilt       = false;
+    this._isReconnecting = false;
+    this._meetingStart   = null;
     this._clockTimer  = null;
     this._toastTimer  = null;
 
@@ -90,11 +96,13 @@ class WebRTCMeetingAPI {
   }
 
   _init() {
+    const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
+
     // Public meeting tokens (RS256) don't belong to any project — skip embed-check
     try {
       const payload = JSON.parse(atob(this.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
       if (payload.type === 'public_host' || payload.type === 'public_guest') {
-        this._buildLobby();
+        if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
         return;
       }
     } catch (_) { /* not a parseable JWT — fall through to embed-check */ }
@@ -103,9 +111,34 @@ class WebRTCMeetingAPI {
       .then(res => {
         console.log('[WRTC] embed-check status:', res.status, res.ok);
         if (!res.ok) { this._showAccessDenied(); return; }
-        this._buildLobby();
+        if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
       })
       .catch((err) => { console.error('[WRTC] embed-check FAILED (catch):', err); this._showAccessDenied(); });
+  }
+
+  _showReconnecting(name) {
+    this._myName         = name;
+    this._isReconnecting = true;   // tells WS to pass reconnect=1 → backend skips knock
+    this.parentNode.innerHTML =
+      '<style>@keyframes wrtc-spin{to{transform:rotate(360deg)}}</style>' +
+      '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;">' +
+      '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.1);' +
+      'border-top:4px solid #1a73e8;border-radius:50%;animation:wrtc-spin 1s linear infinite;"></div>' +
+      '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Reconnecting…</p>' +
+      '<p style="color:rgba(255,255,255,.45);font-size:13px;margin:0;">Please wait</p>' +
+      '</div>';
+    // Get camera, then connect — do NOT call _joinMeeting (it would overwrite this screen)
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      .then(stream => {
+        this._localStream = stream;
+        this._setupAudioAnalyser("local", stream);
+      })
+      .catch(() => {})
+      .finally(() => {
+        sessionStorage.setItem('wrtc_name_' + this.roomName, name);
+        this._setupWebSocket();
+      });
   }
 
   _showAccessDenied() {
@@ -338,11 +371,28 @@ class WebRTCMeetingAPI {
   _joinMeeting(name) {
     this._myName = name;
     sessionStorage.setItem('wrtc_name_' + this.roomName, name);
+    // Show a lightweight waiting screen; full UI is built only after host admits us
+    this.parentNode.innerHTML =
+      '<style>@keyframes wrtc-csp{to{transform:rotate(360deg)}}</style>' +
+      '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;">' +
+      '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.1);' +
+      'border-top:4px solid #1a73e8;border-radius:50%;animation:wrtc-csp 1s linear infinite;"></div>' +
+      '<p id="wrtc-approval-text" style="color:#e8eaed;font-size:17px;font-weight:500;margin:0;">Connecting…</p>' +
+      '<p style="color:rgba(255,255,255,.45);font-size:13px;margin:0;">Please wait</p>' +
+      '</div>';
+    this._setupAudioAnalyser("local", this._localStream);
+    this._setupWebSocket();
+  }
+
+  // Called once host admits the guest (or for host/direct-join on first user-list)
+  _buildUIAfterAdmit() {
+    if (this._uiBuilt) return;
+    this._uiBuilt = true;
+    this._meetingStart = Date.now();
     this._buildUI();
-    // Reattach local stream to the meeting PiP
     const localVid = document.getElementById("wrtc-local-video");
     if (localVid) localVid.srcObject = this._localStream;
-    // Sync mic/cam state from lobby toggles
     if (!this._camEnabled) {
       document.getElementById("wrtc-local-video").style.display = "none";
       document.getElementById("wrtc-pip-avatar").style.display  = "flex";
@@ -355,8 +405,6 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-mic").style.display     = "none";
       document.getElementById("wrtc-ico-mic-off").style.display = "";
     }
-    this._setupAudioAnalyser("local", this._localStream);
-    this._setupWebSocket();
     this._startSpeakerDetection();
   }
 
@@ -413,6 +461,7 @@ class WebRTCMeetingAPI {
       .wrtc-status-dot.err{background:#ea4335}
 
       /* ── STAGE ── */
+      @keyframes wrtc-slide-in{from{opacity:0;transform:translateX(-50%) translateY(-12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       .wrtc-stage{
         flex:1;display:flex;align-items:stretch;
         padding:68px 0 88px;overflow:hidden;transition:padding-right .25s;
@@ -619,6 +668,33 @@ class WebRTCMeetingAPI {
       .wrtc-panel-body{flex:1;display:flex;flex-direction:column;overflow:hidden}
       .wrtc-panel-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
       /* ── PEOPLE TAB ── */
+      .wrtc-knock-header{
+        display:flex;align-items:center;justify-content:space-between;
+        padding:8px 16px 6px;border-bottom:1px solid rgba(255,255,255,.08);
+      }
+      .wrtc-knock-header-label{font-size:11px;color:rgba(255,255,255,.4);font-weight:500;text-transform:uppercase;letter-spacing:.5px}
+      .wrtc-knock-bulk{display:flex;gap:6px}
+      .wrtc-knock-bulk-admit,.wrtc-knock-bulk-deny{
+        padding:3px 10px;border:none;border-radius:6px;font-size:11px;
+        font-weight:500;cursor:pointer;
+      }
+      .wrtc-knock-bulk-admit{background:#1a73e8;color:#fff}
+      .wrtc-knock-bulk-deny{background:rgba(234,67,53,.15);color:#ea4335;border:1px solid rgba(234,67,53,.3)}
+      .wrtc-knock-entry{
+        display:flex;align-items:center;gap:12px;
+        padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.06);
+      }
+        display:flex;align-items:center;gap:12px;
+        padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.06);
+      }
+      .wrtc-knock-actions{display:flex;gap:6px;margin-left:auto;flex-shrink:0}
+      .wrtc-knock-admit,.wrtc-knock-deny{
+        padding:4px 10px;border:none;border-radius:6px;font-size:12px;
+        font-weight:500;cursor:pointer;
+      }
+      .wrtc-knock-admit{background:#1a73e8;color:#fff}
+      .wrtc-knock-deny{background:rgba(234,67,53,.15);color:#ea4335;border:1px solid rgba(234,67,53,.3)}
+      .wrtc-knock-waiting{font-size:11px;color:rgba(255,255,255,.4);margin-top:2px}
       .wrtc-people-list{
         flex:1;overflow-y:auto;padding:8px 0;
       }
@@ -677,6 +753,10 @@ class WebRTCMeetingAPI {
         font-size:11px;color:rgba(255,255,255,.35);text-align:center;
         padding:4px 0;font-style:italic;
       }
+      .wrtc-msg-more{
+        font-size:11px;color:#8ab4f8;cursor:pointer;margin-top:3px;display:inline-block;
+      }
+      .wrtc-msg-more:hover{text-decoration:underline}
       .wrtc-chat-footer{
         display:flex;align-items:center;gap:8px;
         padding:12px 14px;border-top:1px solid rgba(255,255,255,.08);flex-shrink:0;
@@ -786,6 +866,7 @@ class WebRTCMeetingAPI {
         <div class="wrtc-panel-body">
           <!-- People tab content -->
           <div class="wrtc-panel-content" id="wrtc-people-content">
+            <div id="wrtc-knock-list"></div>
             <div class="wrtc-people-list" id="wrtc-people-list"></div>
           </div>
 
@@ -879,6 +960,16 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
+        <!-- Mute All (host only) -->
+        <button class="wrtc-btn" id="wrtc-btn-muteall" title="Mute all participants" style="display:none">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M16.5 12c0 1.77-1.02 3.29-2.5 4.06V8l2.5-2.5V12zM5 9v6h4l5 5V4L9 9H5zm11.5 0l-1.5 1.5V9h1.5zM19 12c0 2.25-1.17 4.23-2.94 5.38L17.5 18.8C19.76 17.28 21.25 14.8 21.25 12c0-2.8-1.49-5.28-3.75-6.8L16.06 6.62C17.83 7.77 19 9.75 19 12zm-8.5-8.5L8 6H4v12h4l2.5 2.5V3.5z"/>
+            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2.2"/>
+          </svg>
+        </button>
+
+        <div class="wrtc-divider"></div>
+
         <!-- Leave -->
         <button class="wrtc-btn wrtc-btn-leave" id="wrtc-btn-leave" title="Leave call">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -898,6 +989,10 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-pip-avatar-text").textContent = this._myName
       ? this._myName.slice(0, 2).toUpperCase() : "YO";
     document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
+    document.getElementById("wrtc-btn-muteall").addEventListener("click", () => {
+      this._sendWS({ type: "mute-all", payload: {} });
+      this._toast("All participants have been muted");
+    });
     document.getElementById("wrtc-btn-mic").addEventListener("click",   () => this._toggleMic());
     document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
     document.getElementById("wrtc-btn-share").addEventListener("click", () => this._toggleScreenShare());
@@ -913,6 +1008,31 @@ class WebRTCMeetingAPI {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._sendChat(); }
     });
 
+    // When chat panel is open and user types anywhere in the meeting,
+    // silently redirect focus + the keypress to the chat input
+    document.addEventListener("keydown", e => {
+      if (this._panelTab !== "chat") return;                // chat not open
+      const input = document.getElementById("wrtc-chat-input");
+      if (!input) return;
+      if (document.activeElement === input) return;         // already focused
+      // Ignore modifier-only keys, function keys, Escape, Tab, etc.
+      const skip = e.ctrlKey || e.metaKey || e.altKey ||
+                   e.key.startsWith("F") ||
+                   ["Escape","Tab","CapsLock","Shift","Control","Alt","Meta",
+                    "ArrowUp","ArrowDown","ArrowLeft","ArrowRight",
+                    "Enter","Backspace","Delete","Home","End","PageUp","PageDown"].includes(e.key);
+      if (skip) return;
+      input.focus();
+    });
+
+    // Clicking anywhere on the chat input always gives it focus
+    document.getElementById("wrtc-chat-input").addEventListener("mousedown", e => {
+      e.stopPropagation();
+    });
+    document.getElementById("wrtc-chat-input").addEventListener("click", e => {
+      e.currentTarget.focus();
+    });
+
     this._startClock();
   }
 
@@ -922,10 +1042,17 @@ class WebRTCMeetingAPI {
   _startClock() {
     const tick = () => {
       const el = document.getElementById("wrtc-clock");
-      if (el) el.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (!el) return;
+      const sec = Math.floor((Date.now() - (this._meetingStart || Date.now())) / 1000);
+      const h   = Math.floor(sec / 3600);
+      const m   = Math.floor((sec % 3600) / 60);
+      const s   = sec % 60;
+      el.textContent = h > 0
+        ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+        : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
     };
     tick();
-    this._clockTimer = setInterval(tick, 15000);
+    this._clockTimer = setInterval(tick, 1000);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1248,6 +1375,28 @@ class WebRTCMeetingAPI {
       }
     }
 
+    // Remove button — only rendered for host, hidden for self
+    // Use data-userid so the handler captures the correct ID at click time
+    if (this._isHost && !isMe) {
+      const removeBtn = document.createElement("button");
+      removeBtn.title = "Remove from meeting";
+      removeBtn.dataset.uid = userId;
+      removeBtn.style.cssText =
+        "background:rgba(234,67,53,.12);border:1px solid rgba(234,67,53,.35);cursor:pointer;"
+        + "padding:3px 9px;border-radius:6px;color:#ea4335;font-size:11px;font-weight:500;"
+        + "font-family:inherit;transition:background .15s;flex-shrink:0;";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("mouseenter", () => removeBtn.style.background = "rgba(234,67,53,.25)");
+      removeBtn.addEventListener("mouseleave", () => removeBtn.style.background = "rgba(234,67,53,.12)");
+      removeBtn.addEventListener("click", () => {
+        const uid = removeBtn.dataset.uid;
+        if (confirm("Remove " + name + " from the meeting?")) {
+          this._sendWS({ type: "kick", payload: { userId: uid } });
+        }
+      });
+      icons.appendChild(removeBtn);
+    }
+
     div.append(av, info, icons);
     return div;
   }
@@ -1267,16 +1416,33 @@ class WebRTCMeetingAPI {
     if (empty) empty.style.display = "none";
 
     const msgs = document.getElementById("wrtc-chat-msgs");
-    const time = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time  = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const safe  = text.replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const LIMIT = 120;
+    const needsTrunc = safe.length > LIMIT;
+    const preview    = needsTrunc ? safe.slice(0, LIMIT) + "…" : safe;
 
-    const div  = document.createElement("div");
+    const div = document.createElement("div");
     div.className = `wrtc-msg${isMine ? " mine" : ""}`;
     div.innerHTML = `
       <div class="wrtc-msg-header">
         <span class="wrtc-msg-name${isMine ? " mine" : ""}">${name}</span>
         <span class="wrtc-msg-time">${time}</span>
       </div>
-      <span class="wrtc-msg-text">${text.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span>`;
+      <span class="wrtc-msg-text" data-full="${safe.replace(/"/g,"&quot;")}" data-expanded="false">${preview}</span>
+      ${needsTrunc ? '<span class="wrtc-msg-more">Show more</span>' : ""}`;
+
+    if (needsTrunc) {
+      div.querySelector(".wrtc-msg-more").addEventListener("click", function () {
+        const span    = div.querySelector(".wrtc-msg-text");
+        const expanded = span.dataset.expanded === "true";
+        span.textContent      = expanded ? span.dataset.full.slice(0, LIMIT) + "…" : span.dataset.full;
+        span.dataset.expanded = expanded ? "false" : "true";
+        this.textContent      = expanded ? "Show more" : "Show less";
+        msgs.scrollTop = msgs.scrollHeight;
+      });
+    }
+
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
   }
@@ -1373,7 +1539,156 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // GRID LAYOUT
   // ═══════════════════════════════════════════════════════════════════════
+  _showKnockRequest(guestId, name) {
+    // 1. Add / refresh entry in the people panel (persistent across panel opens)
+    this._addKnockToPanel(guestId, name);
+
+    // 2. Show a popup for 4 seconds then auto-dismiss (entry stays in panel)
+    const popupId = "wrtc-knock-popup-" + guestId;
+    if (document.getElementById(popupId)) return; // popup already showing
+
+    const popup = document.createElement("div");
+    popup.id = popupId;
+    popup.style.cssText =
+      "position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:300;" +
+      "background:#2d2e31;border:1px solid rgba(255,255,255,.12);border-radius:14px;" +
+      "padding:14px 18px;display:flex;align-items:center;gap:14px;" +
+      "box-shadow:0 4px 32px rgba(0,0,0,.7);font-family:sans-serif;min-width:300px;" +
+      "animation:wrtc-slide-in .25s ease;";
+
+    const av = document.createElement("div");
+    av.style.cssText =
+      "width:38px;height:38px;border-radius:50%;background:" + this._colorFromId(guestId) + ";" +
+      "display:flex;align-items:center;justify-content:center;" +
+      "color:#fff;font-size:15px;font-weight:600;flex-shrink:0;";
+    av.textContent = (name || "?").slice(0, 2).toUpperCase();
+
+    const info = document.createElement("div");
+    info.style.cssText = "flex:1;min-width:0;";
+    info.innerHTML =
+      '<p style="color:#e8eaed;font-size:13px;font-weight:500;margin:0 0 2px;">' +
+      (name || "Someone") + " wants to join</p>" +
+      '<p style="color:rgba(255,255,255,.45);font-size:12px;margin:0;">Check the People tab</p>';
+
+    const makeBtn = (label, bg, action) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.style.cssText =
+        "padding:7px 14px;border:none;border-radius:8px;font-size:13px;font-weight:500;" +
+        "cursor:pointer;background:" + bg + ";color:#fff;flex-shrink:0;";
+      b.addEventListener("click", () => {
+        this._knockAction(guestId, action);
+        popup.remove();
+      });
+      return b;
+    };
+
+    const btnWrap = document.createElement("div");
+    btnWrap.style.cssText = "display:flex;gap:8px;flex-shrink:0;";
+    btnWrap.appendChild(makeBtn("Admit", "#1a73e8", "knock-approve"));
+    btnWrap.appendChild(makeBtn("Deny",  "#ea4335", "knock-deny"));
+
+    popup.append(av, info, btnWrap);
+    document.body.appendChild(popup);
+
+    // Auto-dismiss after 4 seconds (entry remains in people panel)
+    setTimeout(() => popup.remove(), 4000);
+  }
+
+  _addKnockToPanel(guestId, name) {
+    const list = document.getElementById("wrtc-knock-list");
+    if (!list) return;
+    const entryId = "wrtc-knock-entry-" + guestId;
+    if (document.getElementById(entryId)) return; // already in list
+
+    // ── Bulk-action header (shown once, above all knock entries) ──────────────
+    if (!document.getElementById("wrtc-knock-header")) {
+      const header = document.createElement("div");
+      header.id = "wrtc-knock-header";
+      header.className = "wrtc-knock-header";
+      header.innerHTML =
+        '<span class="wrtc-knock-header-label">Waiting to join</span>' +
+        '<div class="wrtc-knock-bulk">' +
+          '<button class="wrtc-knock-bulk-admit" id="wrtc-knock-admit-all">Admit all</button>' +
+          '<button class="wrtc-knock-bulk-deny"  id="wrtc-knock-deny-all">Deny all</button>' +
+        '</div>';
+      list.appendChild(header);
+
+      document.getElementById("wrtc-knock-admit-all").addEventListener("click", () => {
+        list.querySelectorAll(".wrtc-knock-entry").forEach(el => {
+          const gid = el.id.replace("wrtc-knock-entry-", "");
+          this._knockAction(gid, "knock-approve");
+        });
+        this._clearKnockHeader();
+      });
+      document.getElementById("wrtc-knock-deny-all").addEventListener("click", () => {
+        list.querySelectorAll(".wrtc-knock-entry").forEach(el => {
+          const gid = el.id.replace("wrtc-knock-entry-", "");
+          this._knockAction(gid, "knock-deny");
+        });
+        this._clearKnockHeader();
+      });
+    }
+
+    // ── Individual entry ──────────────────────────────────────────────────────
+    const entry = document.createElement("div");
+    entry.id = entryId;
+    entry.className = "wrtc-knock-entry";
+
+    const av = document.createElement("div");
+    av.className = "wrtc-person-avatar";
+    av.style.background = this._colorFromId(guestId);
+    av.textContent = (name || "?").slice(0, 2).toUpperCase();
+
+    const info = document.createElement("div");
+    info.className = "wrtc-person-info";
+    info.innerHTML =
+      '<div class="wrtc-person-name">' + (name || "Guest") + "</div>" +
+      '<div class="wrtc-knock-waiting">Waiting to join…</div>';
+
+    const actions = document.createElement("div");
+    actions.className = "wrtc-knock-actions";
+
+    const admitBtn = document.createElement("button");
+    admitBtn.className = "wrtc-knock-admit";
+    admitBtn.textContent = "Admit";
+    admitBtn.addEventListener("click", () => {
+      this._knockAction(guestId, "knock-approve");
+      entry.remove();
+      if (!list.querySelectorAll(".wrtc-knock-entry").length) this._clearKnockHeader();
+    });
+
+    const denyBtn = document.createElement("button");
+    denyBtn.className = "wrtc-knock-deny";
+    denyBtn.textContent = "Deny";
+    denyBtn.addEventListener("click", () => {
+      this._knockAction(guestId, "knock-deny");
+      entry.remove();
+      if (!list.querySelectorAll(".wrtc-knock-entry").length) this._clearKnockHeader();
+    });
+
+    actions.append(admitBtn, denyBtn);
+    entry.append(av, info, actions);
+    list.appendChild(entry);
+
+    // Auto-open people panel so host sees it
+    if (this._panelTab !== "people" && this._panelTab !== "chat") {
+      this._togglePanel("people");
+    }
+  }
+
+  _clearKnockHeader() {
+    document.getElementById("wrtc-knock-header")?.remove();
+  }
+
+  _knockAction(guestId, action) {
+    this._sendWS({ type: action, payload: { guestId } });
+    document.getElementById("wrtc-knock-entry-" + guestId)?.remove();
+    document.getElementById("wrtc-knock-popup-" + guestId)?.remove();
+  }
+
   _updateGrid() {
+    if (this._isLeaving) return;
     const grid      = document.getElementById("wrtc-grid");
     const waiting   = document.getElementById("wrtc-waiting");
     const localTile = document.getElementById("wrtc-local-tile");
@@ -1447,7 +1762,9 @@ class WebRTCMeetingAPI {
   // WebSocket
   // ═══════════════════════════════════════════════════════════════════════
   _setupWebSocket() {
-    const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}`;
+    const nameParam = this._myName ? `&name=${encodeURIComponent(this._myName)}` : "";
+    const reconnectParam = this._isReconnecting ? "&reconnect=1" : "";
+    const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}${nameParam}${reconnectParam}`;
     this._log("Connecting WebSocket: " + url);
     this._ws = new WebSocket(url);
     this._ws.onopen    = ()  => {
@@ -1509,6 +1826,11 @@ class WebRTCMeetingAPI {
       case "user-list":
         this._myUserId = payload.myId || null;
         this._isHost   = payload.isHost || false;
+        this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
+        if (this._isHost) {
+          const muteAllBtn = document.getElementById("wrtc-btn-muteall");
+          if (muteAllBtn) muteAllBtn.style.display = "";
+        }
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
@@ -1644,6 +1966,63 @@ class WebRTCMeetingAPI {
         break;
 
       case "error": this._log("Server error: " + payload.detail, undefined, "error"); break;
+
+      case "mute-all":
+        if (!this._micEnabled) break; // already muted
+        this._micEnabled = false;
+        this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
+        document.getElementById("wrtc-btn-mic")?.classList.add("muted");
+        if (document.getElementById("wrtc-ico-mic"))  document.getElementById("wrtc-ico-mic").style.display  = "none";
+        if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "";
+        this._toast("You were muted by the host");
+        break;
+
+      case "you-were-kicked":
+        this._isLeaving = true;
+        this._ws?.close();
+        // Clear session so rejoin goes through approval again, not reconnect bypass
+        sessionStorage.removeItem('wrtc_name_' + this.roomName);
+        sessionStorage.removeItem('meet_session_' + this.roomName);
+        this.parentNode.innerHTML =
+          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
+          + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
+          + '<div style="font-size:56px;">🚫</div>'
+          + '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">You were removed</p>'
+          + '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;">The host has removed you from this meeting.</p>'
+          + '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;'
+          + 'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>'
+          + '</div>';
+        break;
+
+      // ── Knock-to-join: guest is waiting for host approval ──────────────────
+      case "knock-waiting": {
+        const el = document.getElementById("wrtc-approval-text");
+        if (el) el.textContent = "Waiting for admin to approve your request…";
+        break;
+      }
+
+      case "knock-denied": {
+        this.parentNode.innerHTML =
+          '<style>@keyframes wrtc-csp{to{transform:rotate(360deg)}}</style>' +
+          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+          'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">' +
+          '<div style="font-size:56px;">🚫</div>' +
+          '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">Request Rejected</p>' +
+          '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;text-align:center;max-width:320px;">' +
+          (payload.reason || 'The admin has rejected your request to join this meeting.') + '</p>' +
+          '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;' +
+          'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>' +
+          '</div>';
+        this._ws?.close();
+        break;
+      }
+
+      // ── Knock-to-join: host sees approval request ──────────────────────────
+      case "knock-request": {
+        const { guestId, name: knockName } = payload;
+        this._showKnockRequest(guestId, knockName);
+        break;
+      }
     }
   }
 
@@ -1758,6 +2137,16 @@ class WebRTCMeetingAPI {
   // PUBLIC: hangup
   // ═══════════════════════════════════════════════════════════════════════
   hangup() {
+    this._isLeaving = true;
+    // Replace parentNode content with leaving overlay so it's removed when React navigates
+    this.parentNode.innerHTML =
+      '<style>@keyframes wrtc-spin2{to{transform:rotate(360deg)}}</style>' +
+      '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;">' +
+      '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.1);' +
+      'border-top:4px solid #ea4335;border-radius:50%;animation:wrtc-spin2 1s linear infinite;"></div>' +
+      '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Leaving…</p>' +
+      '</div>';
     this._sendWS({ type: "leave", payload: {} });
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
@@ -1767,7 +2156,7 @@ class WebRTCMeetingAPI {
     clearInterval(this._clockTimer);
     clearInterval(this._speakerTimer);
     if (this._audioCtx) { this._audioCtx.close(); this._audioCtx = null; }
-    document.getElementById("wrtc-local-video").srcObject = null;
+    const lv = document.getElementById("wrtc-local-video"); if (lv) lv.srcObject = null;
     this._setStatus("err");
     this._toast("You left the call");
     if (typeof this._onLeave === 'function') {
@@ -1783,3 +2172,4 @@ class WebRTCMeetingAPI {
 
 // Expose to global scope so it can be used by dynamically loaded scripts
 window.WebRTCMeetingAPI = WebRTCMeetingAPI;
+})();

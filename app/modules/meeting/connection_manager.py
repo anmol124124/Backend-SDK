@@ -30,6 +30,9 @@ class ConnectionManager:
         self._room_join_order: dict[str, list[str]] = defaultdict(list)
         # current host per room
         self._room_hosts: dict[str, str] = {}
+        # pending guests waiting for host approval
+        # room_id → { user_id → { ws, name, event, approved } }
+        self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -37,12 +40,48 @@ class ConnectionManager:
         self, meeting_id: str, user_id: str, websocket: WebSocket
     ) -> None:
         await websocket.accept()
+        self._add_to_room(meeting_id, user_id, websocket)
+
+    def add_to_room(self, meeting_id: str, user_id: str, websocket: WebSocket) -> None:
+        """Add an already-accepted WebSocket to the room (no accept() call)."""
+        self._add_to_room(meeting_id, user_id, websocket)
+
+    def _add_to_room(self, meeting_id: str, user_id: str, websocket: WebSocket) -> None:
         self._rooms[meeting_id][user_id] = websocket
         self._room_join_order[meeting_id].append(user_id)
         logger.info(
             "WS connect    meeting=%s  user=%s  room_size=%d",
             meeting_id, user_id, len(self._rooms[meeting_id]),
         )
+
+    # ── Knock-to-join (waiting room) ──────────────────────────────────────────
+
+    def add_pending(self, meeting_id: str, user_id: str, websocket: WebSocket, name: str):
+        """Register a guest as pending approval. Returns an asyncio.Event to await."""
+        import asyncio
+        event = asyncio.Event()
+        self._pending[meeting_id][user_id] = {
+            "ws": websocket, "name": name, "event": event, "approved": False,
+        }
+        return event
+
+    def resolve_pending(self, meeting_id: str, user_id: str, approved: bool) -> None:
+        """Called by host to approve or deny a pending guest."""
+        entry = self._pending.get(meeting_id, {}).get(user_id)
+        if entry:
+            entry["approved"] = approved
+            entry["event"].set()
+
+    def remove_pending(self, meeting_id: str, user_id: str) -> None:
+        self._pending.get(meeting_id, {}).pop(user_id, None)
+        if not self._pending.get(meeting_id):
+            self._pending.pop(meeting_id, None)
+
+    def get_pending(self, meeting_id: str, user_id: str) -> dict | None:
+        return self._pending.get(meeting_id, {}).get(user_id)
+
+    def get_pending_ids(self, meeting_id: str) -> list[str]:
+        return list(self._pending.get(meeting_id, {}).keys())
 
     def disconnect(self, meeting_id: str, user_id: str) -> None:
         room = self._rooms.get(meeting_id, {})
