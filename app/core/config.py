@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     PUBLIC_GUEST_TOKEN_TTL_HOURS: int = 12
 
     # ── Public meet frontend URL ──────────────────────────────────────────
-    PUBLIC_MEET_URL: str = "https://meet.antier.xyz"
+    PUBLIC_MEET_URL: str = "http://localhost:5173"
 
     # ── Backend public URL ────────────────────────────────────────────────
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"

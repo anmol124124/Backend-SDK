@@ -1,7 +1,10 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +48,9 @@ async def list_projects(
 @router.get("/embed-check")
 async def embed_check(token: str, request: Request) -> JSONResponse:
     origin = request.headers.get("origin") or request.headers.get("referer", "")
+    logger.warning("embed-check origin=%r referer=%r allowed_result=pending", origin, request.headers.get("referer", ""))
     allowed = await check_embed_domain(token, origin)
+    logger.warning("embed-check origin=%r allowed=%s", origin, allowed)
     if allowed:
         return JSONResponse({"allowed": True})
     return JSONResponse({"allowed": False}, status_code=403)

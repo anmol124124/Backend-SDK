@@ -26,6 +26,10 @@ class ConnectionManager:
     def __init__(self) -> None:
         # meeting_id (str) → { user_id (str) → WebSocket }
         self._rooms: dict[str, dict[str, WebSocket]] = defaultdict(dict)
+        # join order per room (for host transfer)
+        self._room_join_order: dict[str, list[str]] = defaultdict(list)
+        # current host per room
+        self._room_hosts: dict[str, str] = {}
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -34,6 +38,7 @@ class ConnectionManager:
     ) -> None:
         await websocket.accept()
         self._rooms[meeting_id][user_id] = websocket
+        self._room_join_order[meeting_id].append(user_id)
         logger.info(
             "WS connect    meeting=%s  user=%s  room_size=%d",
             meeting_id, user_id, len(self._rooms[meeting_id]),
@@ -42,9 +47,32 @@ class ConnectionManager:
     def disconnect(self, meeting_id: str, user_id: str) -> None:
         room = self._rooms.get(meeting_id, {})
         room.pop(user_id, None)
+        order = self._room_join_order.get(meeting_id, [])
+        if user_id in order:
+            order.remove(user_id)
         if not room:                      # last user left — free the room
             self._rooms.pop(meeting_id, None)
+            self._room_join_order.pop(meeting_id, None)
+            self._room_hosts.pop(meeting_id, None)
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
+
+    # ── Host management ───────────────────────────────────────────────────────
+
+    def set_host(self, meeting_id: str, user_id: str) -> None:
+        self._room_hosts[meeting_id] = user_id
+
+    def get_host(self, meeting_id: str) -> str | None:
+        return self._room_hosts.get(meeting_id)
+
+    def is_host(self, meeting_id: str, user_id: str) -> bool:
+        return self._room_hosts.get(meeting_id) == user_id
+
+    def next_in_room(self, meeting_id: str, exclude_user_id: str) -> str | None:
+        """Return the next user in join order, skipping exclude_user_id."""
+        for uid in self._room_join_order.get(meeting_id, []):
+            if uid != exclude_user_id:
+                return uid
+        return None
 
     # ── Introspection ─────────────────────────────────────────────────────────
 

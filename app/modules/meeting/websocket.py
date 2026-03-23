@@ -350,6 +350,10 @@ async def signaling_endpoint(
     # ── Step 4: accept & register ─────────────────────────────────────────────
     await manager.connect(room_id, user_id, websocket)
 
+    # First person to join becomes host
+    if manager.get_host(room_id) is None:
+        manager.set_host(room_id, user_id)
+
     # ── Step 5: initialise SFU room + send capabilities ───────────────────────
     sfu_available = True
     try:
@@ -374,7 +378,12 @@ async def signaling_endpoint(
         {
             "type": "user-list",
             "from": "server",
-            "payload": {"users": existing, "sfuAvailable": sfu_available},
+            "payload": {
+                "users": existing,
+                "sfuAvailable": sfu_available,
+                "myId": user_id,
+                "isHost": manager.is_host(room_id, user_id),
+            },
         },
     )
 
@@ -444,6 +453,10 @@ async def signaling_endpoint(
 
     finally:
         # ── Step 9: cleanup ───────────────────────────────────────────────────
+        # Check host status before disconnecting
+        was_host = manager.is_host(room_id, user_id)
+        next_host = manager.next_in_room(room_id, user_id) if was_host else None
+
         manager.disconnect(room_id, user_id)
 
         # Remove peer from mediasoup (closes transports, producers, consumers)
@@ -452,9 +465,19 @@ async def signaling_endpoint(
         except Exception as exc:
             logger.warning("SFU peer cleanup failed  room=%s  user=%s  error=%s", room_id, user_id, exc)
 
-        # Notify remaining peers
+        # Notify remaining peers of leave
         await manager.broadcast_to_room(
             room_id,
             {"type": "leave", "from": user_id, "payload": {"user_id": user_id}},
         )
+
+        # Transfer host to next participant if host left
+        if was_host and next_host:
+            manager.set_host(room_id, next_host)
+            await manager.broadcast_to_room(
+                room_id,
+                {"type": "host-changed", "from": "server", "payload": {"hostId": next_host}},
+            )
+            logger.info("Host transferred  meeting=%s  new_host=%s", room_id, next_host)
+
         logger.info("WS cleanup done  meeting=%s  user=%s", room_id, user_id)

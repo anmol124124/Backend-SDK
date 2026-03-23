@@ -17,6 +17,13 @@ class MeetingInfoResponse(BaseModel):
     is_active: bool
 
 
+class MeetingListItem(BaseModel):
+    room_code: str
+    name: str
+    url: str
+    is_active: bool
+
+
 class GuestTokenRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=60, description="Guest display name")
 

@@ -7,6 +7,8 @@ e.g. zfv-nidu-hjd
 
 import random
 import string
+import uuid as _uuid
+from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -18,6 +20,7 @@ from app.modules.public_meeting.models import PublicMeeting
 from app.modules.public_meeting.schemas import (
     CreateMeetingResponse,
     MeetingInfoResponse,
+    MeetingListItem,
     TokenResponse,
 )
 
@@ -31,7 +34,11 @@ def _generate_room_code() -> str:
     return f"{part1}-{part2}-{part3}"
 
 
-async def create_meeting(name: str, db: AsyncSession) -> CreateMeetingResponse:
+async def create_meeting(
+    name: str,
+    db: AsyncSession,
+    user_id: Optional[_uuid.UUID] = None,
+) -> CreateMeetingResponse:
     # Ensure room code is unique (retry up to 5 times — collision extremely unlikely)
     for _ in range(5):
         code = _generate_room_code()
@@ -43,7 +50,7 @@ async def create_meeting(name: str, db: AsyncSession) -> CreateMeetingResponse:
     else:
         raise HTTPException(status_code=500, detail="Could not generate unique room code")
 
-    meeting = PublicMeeting(room_code=code, name=name)
+    meeting = PublicMeeting(room_code=code, name=name, created_by=user_id)
     db.add(meeting)
     await db.commit()
     await db.refresh(meeting)
@@ -53,6 +60,26 @@ async def create_meeting(name: str, db: AsyncSession) -> CreateMeetingResponse:
         name=meeting.name,
         url=f"{settings.PUBLIC_MEET_URL}/{meeting.room_code}",
     )
+
+
+async def list_user_meetings(user_id: _uuid.UUID, db: AsyncSession) -> list[MeetingListItem]:
+    rows = (
+        await db.execute(
+            select(PublicMeeting)
+            .where(PublicMeeting.created_by == user_id)
+            .order_by(PublicMeeting.created_at.desc())
+        )
+    ).scalars().all()
+
+    return [
+        MeetingListItem(
+            room_code=m.room_code,
+            name=m.name,
+            url=f"{settings.PUBLIC_MEET_URL}/{m.room_code}",
+            is_active=m.is_active,
+        )
+        for m in rows
+    ]
 
 
 async def get_meeting(room_code: str, db: AsyncSession) -> MeetingInfoResponse:

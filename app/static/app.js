@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", parentNode }) {
+  constructor({ serverUrl, roomName, token = "", parentNode, onLeave = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -23,6 +23,7 @@ class WebRTCMeetingAPI {
     this.roomName   = roomName;
     this.token      = token;
     this.parentNode = parentNode;
+    this._onLeave   = onLeave;
 
     // WebRTC state
     this._ws                = null;
@@ -48,6 +49,10 @@ class WebRTCMeetingAPI {
     // Raise hand
     this._handRaised  = false;
     this._raisedHands = new Set();
+
+    // Host tracking
+    this._myUserId = null;
+    this._isHost   = false;
 
     // Active speaker
     this._audioCtx      = null;
@@ -78,10 +83,11 @@ class WebRTCMeetingAPI {
   _init() {
     fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
       .then(res => {
+        console.log('[WRTC] embed-check status:', res.status, res.ok);
         if (!res.ok) { this._showAccessDenied(); return; }
         this._buildLobby();
       })
-      .catch(() => this._showAccessDenied());
+      .catch((err) => { console.error('[WRTC] embed-check FAILED (catch):', err); this._showAccessDenied(); });
   }
 
   _showAccessDenied() {
@@ -281,8 +287,19 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-lobby-cam-off").style.display      = this._camEnabled ? "none"  : "flex";
     });
 
-    // Start camera preview
-    this._initPreview();
+    // Start camera preview, then auto-rejoin if session name exists
+    this._initPreview().then(() => {
+      const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
+      if (savedName) {
+        nameInput.value = savedName;
+        joinBtn.disabled = false;
+        joinBtn.click();
+        if (sessionStorage.getItem('wrtc_sharing_' + this.roomName)) {
+          setTimeout(() => this._toast("Screen sharing stopped — click Share to resume"), 1500);
+          sessionStorage.removeItem('wrtc_sharing_' + this.roomName);
+        }
+      }
+    });
   }
 
   async _initPreview() {
@@ -298,6 +315,7 @@ class WebRTCMeetingAPI {
 
   _joinMeeting(name) {
     this._myName = name;
+    sessionStorage.setItem('wrtc_name_' + this.roomName, name);
     this._buildUI();
     // Reattach local stream to the meeting PiP
     const localVid = document.getElementById("wrtc-local-video");
@@ -381,10 +399,9 @@ class WebRTCMeetingAPI {
 
       /* ── GRID ── */
       .wrtc-grid{
-        flex:1;display:grid;gap:8px;
-        padding:8px;overflow:hidden;
-        align-items:center;justify-items:center;
-        align-content:center;justify-content:center;
+        flex:1;display:grid;gap:6px;
+        padding:6px;overflow:hidden;
+        align-items:stretch;justify-items:stretch;
       }
 
       /* ── TILE ── */
@@ -465,53 +482,36 @@ class WebRTCMeetingAPI {
         font-size:10px;color:#fff;font-weight:500;
         background:rgba(0,0,0,.55);padding:2px 5px;border-radius:4px;
       }
-      /* local pip moves up when thumbs visible */
-      .wrtc-stage.presenting ~ .wrtc-pip{ bottom:106px; }
-      .wrtc-stage.panel-open ~ .wrtc-pip{ right:356px; }
 
       /* ── WAITING ── */
       .wrtc-waiting{
-        display:flex;flex-direction:column;align-items:center;justify-content:center;
-        gap:16px;color:rgba(255,255,255,.45);text-align:center;padding:40px;
+        position:absolute;inset:0;z-index:5;border-radius:inherit;
+        display:none;flex-direction:column;align-items:center;justify-content:center;
+        gap:16px;color:rgba(255,255,255,.7);text-align:center;padding:40px;
       }
       .wrtc-waiting-ring{
-        width:64px;height:64px;border-radius:50%;
-        border:2px solid rgba(255,255,255,.15);border-top-color:rgba(255,255,255,.5);
+        width:48px;height:48px;border-radius:50%;
+        border:2px solid rgba(255,255,255,.15);border-top-color:rgba(255,255,255,.6);
         animation:wrtc-spin 1.3s linear infinite;
       }
       @keyframes wrtc-spin{to{transform:rotate(360deg)}}
-      .wrtc-waiting p  {font-size:15px;font-weight:400}
+      .wrtc-waiting p  {font-size:14px;font-weight:500}
       .wrtc-waiting small{font-size:12px;opacity:.6}
 
-      /* ── PiP ── */
-      .wrtc-pip{
-        position:absolute;bottom:96px;right:16px;
-        width:192px;height:108px;border-radius:12px;overflow:hidden;
-        background:#3c4043;z-index:25;
-        box-shadow:0 4px 24px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.08);
-        transition:transform .15s,box-shadow .25s,right .25s;cursor:pointer;
-      }
-      .wrtc-stage.chat-open ~ .wrtc-pip{right:356px}
-      .wrtc-pip:hover{transform:scale(1.03);box-shadow:0 8px 32px rgba(0,0,0,.7),0 0 0 2px rgba(255,255,255,.2)}
-      .wrtc-pip.speaking{box-shadow:0 0 0 3px #1a73e8,0 4px 24px rgba(0,0,0,.6)}
-      .wrtc-pip video{width:100%;height:100%;object-fit:cover;display:block}
+      /* ── PiP (hidden — local video is now a grid tile) ── */
+      .wrtc-pip{ display:none; }
       .wrtc-pip-avatar{
-        position:absolute;inset:0;display:none;
+        position:absolute;inset:0;display:none;z-index:2;
         align-items:center;justify-content:center;
+        background:#3c4043;
       }
       .wrtc-pip-avatar span{
-        width:48px;height:48px;border-radius:50%;
+        width:clamp(48px,8vw,88px);height:clamp(48px,8vw,88px);border-radius:50%;
         display:flex;align-items:center;justify-content:center;
-        font-size:20px;font-weight:500;color:#fff;background:#5f6368;
-      }
-      .wrtc-pip-label{
-        position:absolute;bottom:6px;left:8px;
-        font-size:11px;color:#fff;font-weight:500;
-        background:rgba(0,0,0,.5);padding:2px 6px;border-radius:4px;
-        backdrop-filter:blur(3px);
+        font-size:clamp(18px,3vw,34px);font-weight:500;color:#fff;background:#1a73e8;
       }
       .wrtc-pip-hand{
-        position:absolute;top:6px;right:8px;font-size:18px;
+        position:absolute;top:10px;right:10px;z-index:3;font-size:22px;
         display:none;animation:wrtc-bounce .6s ease-in-out infinite alternate;
       }
       .wrtc-pip-hand.raised{display:block}
@@ -713,10 +713,20 @@ class WebRTCMeetingAPI {
       <!-- STAGE -->
       <div class="wrtc-stage" id="wrtc-stage">
         <div class="wrtc-grid" id="wrtc-grid">
-          <div class="wrtc-waiting" id="wrtc-waiting">
-            <div class="wrtc-waiting-ring"></div>
-            <p>Waiting for others to join</p>
-            <small>Room: <strong id="wrtc-room-hint"></strong></small>
+          <!-- LOCAL TILE — always in the grid -->
+          <div class="wrtc-tile wrtc-local-tile" id="wrtc-local-tile">
+            <video id="wrtc-local-video" autoplay muted playsinline></video>
+            <div class="wrtc-pip-avatar" id="wrtc-pip-avatar">
+              <span id="wrtc-pip-avatar-text"></span>
+            </div>
+            <div class="wrtc-pip-hand" id="wrtc-pip-hand">✋</div>
+            <div class="wrtc-tile-label" id="wrtc-pip-label"></div>
+            <!-- Waiting overlay — shown when alone -->
+            <div class="wrtc-waiting" id="wrtc-waiting">
+              <div class="wrtc-waiting-ring"></div>
+              <p>Waiting for others to join</p>
+              <small>Room: <strong id="wrtc-room-hint"></strong></small>
+            </div>
           </div>
         </div>
       </div>
@@ -724,15 +734,8 @@ class WebRTCMeetingAPI {
       <!-- Thumbnail strip (shown during presentation) -->
       <div class="wrtc-thumbs" id="wrtc-thumbs"></div>
 
-      <!-- SELF PiP -->
-      <div class="wrtc-pip" id="wrtc-pip">
-        <video id="wrtc-local-video" autoplay muted playsinline></video>
-        <div class="wrtc-pip-avatar" id="wrtc-pip-avatar">
-          <span id="wrtc-pip-avatar-text"></span>
-        </div>
-        <div class="wrtc-pip-hand" id="wrtc-pip-hand">✋</div>
-        <div class="wrtc-pip-label" id="wrtc-pip-label"></div>
-      </div>
+      <!-- PiP hidden — local video is now in the grid -->
+      <div class="wrtc-pip" id="wrtc-pip" style="display:none"></div>
 
       <!-- SIDE PANEL (People + Chat) -->
       <div class="wrtc-side-panel" id="wrtc-side-panel">
@@ -934,6 +937,7 @@ class WebRTCMeetingAPI {
       this._shareStream?.getTracks().forEach(t => t.stop());
       this._shareStream = null;
       this._isSharing   = false;
+      sessionStorage.removeItem('wrtc_sharing_' + this.roomName);
       await this._restoreCameraTrack();
       document.getElementById("wrtc-btn-share").classList.remove("on-air");
       document.getElementById("wrtc-ico-share").style.display      = "";
@@ -946,6 +950,7 @@ class WebRTCMeetingAPI {
       try {
         this._shareStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         this._isSharing   = true;
+        sessionStorage.setItem('wrtc_sharing_' + this.roomName, '1');
         const screenTrack = this._shareStream.getVideoTracks()[0];
         screenTrack.onended = () => { if (this._isSharing) this._toggleScreenShare(); };
         await this._replaceVideoTrack(screenTrack);
@@ -1060,37 +1065,65 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // RECORDING
   // ═══════════════════════════════════════════════════════════════════════
-  _toggleRecording() {
+  async _toggleRecording() {
     if (this._isRecording) {
       this._mediaRecorder?.stop();
       this._isRecording = false;
+      this._recordTabStream?.getTracks().forEach(t => t.stop());
+      this._recordTabStream = null;
+      this._recordAudioCtx?.close();
+      this._recordAudioCtx = null;
       document.getElementById("wrtc-btn-rec").classList.remove("active-feature");
       document.getElementById("wrtc-rec-badge").classList.remove("active");
       document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
       this._toast("Recording saved");
     } else {
-      const stream = this._isSharing ? this._shareStream : this._localStream;
-      if (!stream) { this._toast("No stream to record"); return; }
+      try {
+        // Capture the entire browser tab — everything visible including all participants
+        const tabStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 30 },
+          audio: true,
+          preferCurrentTab: true,
+        });
+        this._recordTabStream = tabStream;
 
-      const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"]
-        .find(t => MediaRecorder.isTypeSupported(t)) || "";
+        // Mix tab audio + local mic so your voice is always in the recording
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const dest = audioCtx.createMediaStreamDestination();
+        if (tabStream.getAudioTracks().length)
+          audioCtx.createMediaStreamSource(tabStream).connect(dest);
+        if (this._localStream?.getAudioTracks().length)
+          audioCtx.createMediaStreamSource(this._localStream).connect(dest);
+        this._recordAudioCtx = audioCtx;
 
-      this._recordChunks  = [];
-      this._mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
-      this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
-      this._mediaRecorder.onstop = () => {
-        const blob = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
-        const url  = URL.createObjectURL(blob);
-        const a    = Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` });
-        a.click();
-        URL.revokeObjectURL(url);
-      };
-      this._mediaRecorder.start(1000);
-      this._isRecording = true;
-      document.getElementById("wrtc-btn-rec").classList.add("active-feature");
-      document.getElementById("wrtc-rec-badge").classList.add("active");
-      document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
-      this._toast("Recording started");
+        const combined = new MediaStream([
+          ...tabStream.getVideoTracks(),
+          ...dest.stream.getAudioTracks(),
+        ]);
+
+        const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"]
+          .find(t => MediaRecorder.isTypeSupported(t)) || "";
+
+        this._recordChunks  = [];
+        this._mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : {});
+        this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
+        this._mediaRecorder.onstop = () => {
+          const blob = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
+          const url  = URL.createObjectURL(blob);
+          Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` }).click();
+          URL.revokeObjectURL(url);
+        };
+        tabStream.getVideoTracks()[0].onended = () => { if (this._isRecording) this._toggleRecording(); };
+        this._mediaRecorder.start(1000);
+        this._isRecording = true;
+        document.getElementById("wrtc-btn-rec").classList.add("active-feature");
+        document.getElementById("wrtc-rec-badge").classList.add("active");
+        document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
+        this._toast("Recording started — select this tab to capture everything");
+      } catch (err) {
+        if (err.name !== "NotAllowedError") this._toast("Recording failed: " + err.message);
+        this._log("Recording error: " + err.message, undefined, "error");
+      }
     }
   }
 
@@ -1288,14 +1321,14 @@ class WebRTCMeetingAPI {
         // Clear old highlight
         if (this._currentSpeaker) {
           const prev = this._currentSpeaker === "local"
-            ? document.getElementById("wrtc-pip")
+            ? document.getElementById("wrtc-local-tile")
             : document.getElementById(`wrtc-tile-${this._currentSpeaker}`);
           prev?.classList.remove("speaking");
         }
         // Set new highlight
         if (activeSpeaker) {
           const el = activeSpeaker === "local"
-            ? document.getElementById("wrtc-pip")
+            ? document.getElementById("wrtc-local-tile")
             : document.getElementById(`wrtc-tile-${activeSpeaker}`);
           el?.classList.add("speaking");
         }
@@ -1322,17 +1355,19 @@ class WebRTCMeetingAPI {
   _updateGrid() {
     const grid    = document.getElementById("wrtc-grid");
     const waiting = document.getElementById("wrtc-waiting");
-    const count   = Object.keys(this._peerConnections).length;
     if (!grid) return;
-    waiting.style.display = count === 0 ? "flex" : "none";
-    if (count === 0) {
-      grid.style.gridTemplateColumns = "1fr";
-      grid.style.gridTemplateRows    = "1fr";
-      return;
-    }
-    const cols = count === 1 ? 1 : count <= 4 ? 2 : count <= 9 ? 3 : 4;
+    const remoteCount = Object.keys(this._peerConnections).length;
+    waiting.style.display = remoteCount === 0 ? "flex" : "none";
+    const total = remoteCount + 1; // +1 for local tile
+    let cols, rows;
+    if (total <= 1)       { cols = 1; rows = 1; }
+    else if (total === 2) { cols = 2; rows = 1; }
+    else if (total <= 4)  { cols = 2; rows = 2; }
+    else if (total <= 6)  { cols = 3; rows = 2; }
+    else if (total <= 9)  { cols = 3; rows = 3; }
+    else                  { cols = 4; rows = Math.ceil(total / 4); }
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
-    grid.style.gridTemplateRows    = `repeat(${Math.ceil(count / cols)}, minmax(0, 1fr))`;
+    grid.style.gridTemplateRows    = `repeat(${rows}, minmax(0, 1fr))`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1424,6 +1459,8 @@ class WebRTCMeetingAPI {
     switch (type) {
 
       case "user-list":
+        this._myUserId = payload.myId || null;
+        this._isHost   = payload.isHost || false;
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
@@ -1439,6 +1476,11 @@ class WebRTCMeetingAPI {
           setTimeout(() => this._sendWS({ type: "presenting", payload: { active: true } }), 800);
         }
         await this._initiateOffer(payload.user_id);
+        break;
+
+      case "host-changed":
+        this._isHost = (payload.hostId === this._myUserId);
+        if (this._isHost) this._toast("You are now the host");
         break;
 
       case "leave": {
@@ -1679,6 +1721,9 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-local-video").srcObject = null;
     this._setStatus("err");
     this._toast("You left the call");
+    if (typeof this._onLeave === 'function') {
+      setTimeout(() => this._onLeave(), 1200);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
