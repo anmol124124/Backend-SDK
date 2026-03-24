@@ -456,11 +456,34 @@ async def signaling_endpoint(
                 room_id, user_id, host_id,
             )
 
-        # Wait for host decision (10-min timeout)
+        # Wait for host decision while also watching for guest disconnect (10-min timeout)
         logger.info("Waiting for approval  room=%s  guest=%s  timeout=600s", room_id, user_id)
+
+        ws_disconnected = asyncio.Event()
+
+        async def _ws_close_guard():
+            """Set ws_disconnected if the guest's WS closes while pending."""
+            try:
+                while True:
+                    await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+            ws_disconnected.set()
+
+        ws_guard_task = asyncio.create_task(_ws_close_guard())
+        approval_task = asyncio.create_task(approval_event.wait())
         try:
-            await asyncio.wait_for(approval_event.wait(), timeout=600)
-        except asyncio.TimeoutError:
+            done, _ = await asyncio.wait(
+                {ws_guard_task, approval_task},
+                timeout=600,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            ws_guard_task.cancel()
+            approval_task.cancel()
+
+        if not done:
+            # 10-minute timeout — no host decision
             logger.warning("Knock timed out  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
             manager.remove_pending(room_id, user_id)
             try:
@@ -472,6 +495,15 @@ async def signaling_endpoint(
                 await websocket.close()
             except Exception:
                 pass
+            return
+
+        if ws_disconnected.is_set() and not approval_event.is_set():
+            # Guest's WS closed before host made a decision — clean up silently
+            logger.warning(
+                "Pending guest WS closed before approval  room=%s  guest=%s  name=%s",
+                room_id, user_id, guest_name,
+            )
+            manager.remove_pending(room_id, user_id)
             return
 
         pending_data = manager.get_pending(room_id, user_id)
