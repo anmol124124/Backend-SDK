@@ -53,8 +53,8 @@ class WebRTCMeetingAPI {
     this._raisedHands = new Set();
 
     // Host tracking
-    this._myUserId = null;
-    this._isHost   = false;
+    this._myUserId  = null;
+    this._isHost    = false;
 
     // Active speaker
     this._audioCtx      = null;
@@ -409,7 +409,10 @@ class WebRTCMeetingAPI {
   _buildUIAfterAdmit() {
     if (this._uiBuilt) return;
     this._uiBuilt = true;
-    this._meetingStart = Date.now();
+    const startKey = 'wrtc_start_' + this.roomName;
+    const saved = sessionStorage.getItem(startKey);
+    this._meetingStart = saved ? parseInt(saved, 10) : Date.now();
+    if (!saved) sessionStorage.setItem(startKey, String(this._meetingStart));
     // Re-apply saved cam/mic state (handles cases where it may have been reset before UI builds)
     if (sessionStorage.getItem('wrtc_mic_' + this.roomName) === '0') {
       this._micEnabled = false;
@@ -517,8 +520,10 @@ class WebRTCMeetingAPI {
         display:flex;align-items:center;gap:5px;
         background:rgba(255,255,255,.12);border-radius:20px;
         padding:4px 12px 4px 8px;font-size:13px;color:#e8eaed;
-        backdrop-filter:blur(4px);
+        backdrop-filter:blur(4px);cursor:pointer;
+        transition:background .15s;
       }
+      .wrtc-peer-chip:hover{background:rgba(255,255,255,.22);}
       .wrtc-status-dot{
         width:8px;height:8px;border-radius:50%;background:#5f6368;
         transition:background .3s;
@@ -694,7 +699,7 @@ class WebRTCMeetingAPI {
 
       /* ── SIDE PANEL (People + Chat) ── */
       .wrtc-side-panel{
-        position:absolute;top:0;right:0;bottom:0;width:340px;z-index:28;
+        position:absolute;top:0;right:0;bottom:0;width:340px;z-index:32;
         background:#202124;border-left:1px solid rgba(255,255,255,.08);
         display:flex;flex-direction:column;
         transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);
@@ -1108,6 +1113,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-rec").addEventListener("click",   () => this._toggleRecording());
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
     document.getElementById("wrtc-btn-people").addEventListener("click", () => this._togglePanel("people"));
+    document.getElementById("wrtc-user-count").closest(".wrtc-peer-chip").addEventListener("click", () => this._togglePanel("people"));
     document.getElementById("wrtc-btn-chat").addEventListener("click",   () => this._togglePanel("chat"));
     document.getElementById("wrtc-tab-people").addEventListener("click", () => this._switchTab("people"));
     document.getElementById("wrtc-tab-chat").addEventListener("click",   () => this._switchTab("chat"));
@@ -1950,9 +1956,9 @@ class WebRTCMeetingAPI {
     switch (type) {
 
       case "user-list":
-        this._myUserId  = payload.myId || null;
-        this._isHost    = payload.isHost || false;
-        this._settings  = payload.settings || {};
+        this._myUserId   = payload.myId || null;
+        this._isHost     = payload.isHost || false;
+        this._settings   = payload.settings || {};
         // Only now is the user admitted — safe to persist name for reconnect
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
@@ -1999,6 +2005,7 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
         sessionStorage.removeItem("wrtc_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_start_" + this.roomName);
         this._ws?.close();
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
@@ -2182,6 +2189,7 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem('meet_session_' + this.roomName);
         sessionStorage.removeItem('wrtc_mic_' + this.roomName);
         sessionStorage.removeItem('wrtc_cam_' + this.roomName);
+        sessionStorage.removeItem('wrtc_start_' + this.roomName);
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
           + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
@@ -2404,6 +2412,7 @@ class WebRTCMeetingAPI {
       '</div>';
     sessionStorage.removeItem('wrtc_mic_' + this.roomName);
     sessionStorage.removeItem('wrtc_cam_' + this.roomName);
+    sessionStorage.removeItem('wrtc_start_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
