@@ -617,6 +617,20 @@ async def signaling_endpoint(
                     "from": "server",
                     "payload": {"guestId": pending_uid, "name": pending["name"]},
                 })
+                # Also update the guest's waiting screen — they may still show
+                # "Waiting for host to join" since the host wasn't connected when
+                # they first knocked.
+                try:
+                    await pending["ws"].send_json({
+                        "type": "knock-waiting",
+                        "from": "server",
+                        "payload": {"name": pending["name"], "host_present": True},
+                    })
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to update knock-waiting for guest  room=%s  guest=%s  error=%s",
+                        room_id, pending_uid, exc,
+                    )
 
     # ── Step 8: message loop ──────────────────────────────────────────────────
     try:

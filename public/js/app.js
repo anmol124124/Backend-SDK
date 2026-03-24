@@ -1722,9 +1722,6 @@ class WebRTCMeetingAPI {
 
     popup.append(av, info, btnWrap);
     document.body.appendChild(popup);
-
-    // Auto-dismiss after 4 seconds (entry remains in people panel)
-    setTimeout(() => popup.remove(), 4000);
   }
 
   _addKnockToPanel(guestId, name) {
