@@ -358,9 +358,10 @@ async def signaling_endpoint(
         return
 
     room_id = meeting_id
+    base_user_id = str(user.id)
     # Append a short session suffix so the same user can join from multiple
     # tabs/devices without overwriting their own slot in the connection manager
-    user_id = str(user.id) + "_" + str(uuid.uuid4())[:8]
+    user_id = base_user_id + "_" + str(uuid.uuid4())[:8]
 
     # ── Step 4: load meeting settings (public meetings only) ──────────────────
     token_type  = _get_token_type(token)
@@ -400,6 +401,16 @@ async def signaling_endpoint(
         is_guest, is_reconnect, require_approval,
         host_id, manager.room_size(room_id),
     )
+
+    # A guest with reconnect=1 may bypass knock ONLY if they were previously admitted.
+    # If reconnect=1 but the guest was never admitted (e.g. refreshed from waiting screen),
+    # treat as a fresh connection and route through the knock flow.
+    if is_guest and is_reconnect and require_approval and not manager.was_admitted(room_id, base_user_id):
+        logger.warning(
+            "Reconnect=1 from unadmitted guest — forcing knock flow  room=%s  user=%s  base=%s",
+            room_id, user_id, base_user_id,
+        )
+        is_reconnect = False
 
     if is_guest and not is_reconnect and require_approval:
         # Accept WS but hold guest in waiting room until host approves
@@ -480,6 +491,8 @@ async def signaling_endpoint(
             return
 
         logger.info("Knock approved  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
+        # Record admission so future reconnect=1 from this guest is allowed
+        manager.mark_admitted(room_id, base_user_id)
         # Approved — add to active room
         manager.add_to_room(room_id, user_id, websocket)
     else:

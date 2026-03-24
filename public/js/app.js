@@ -2453,6 +2453,7 @@ class WebRTCMeetingAPI {
       'border-top:4px solid #ea4335;border-radius:50%;animation:wrtc-spin2 1s linear infinite;"></div>' +
       '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Leaving…</p>' +
       '</div>';
+    sessionStorage.removeItem('wrtc_name_' + this.roomName);
     sessionStorage.removeItem('wrtc_mic_' + this.roomName);
     sessionStorage.removeItem('wrtc_cam_' + this.roomName);
     sessionStorage.removeItem('wrtc_start_' + this.roomName);

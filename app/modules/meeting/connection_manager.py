@@ -37,6 +37,9 @@ class ConnectionManager:
         # pending guests waiting for host approval
         # room_id → { user_id → { ws, name, event, approved } }
         self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
+        # base user IDs (UUID without session suffix) that were admitted to each room
+        # used to validate reconnect=1 bypass — only admitted guests may skip knock
+        self._admitted_guests: dict[str, set[str]] = defaultdict(set)
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -99,6 +102,15 @@ class ConnectionManager:
     def get_pending_ids(self, meeting_id: str) -> list[str]:
         return list(self._pending.get(meeting_id, {}).keys())
 
+    def mark_admitted(self, meeting_id: str, base_user_id: str) -> None:
+        """Record that a guest was admitted. Enables reconnect=1 bypass on refresh."""
+        self._admitted_guests[meeting_id].add(base_user_id)
+        logger.info("Guest admitted  meeting=%s  base_user=%s", meeting_id, base_user_id)
+
+    def was_admitted(self, meeting_id: str, base_user_id: str) -> bool:
+        """Return True if this guest was previously admitted to the room."""
+        return base_user_id in self._admitted_guests.get(meeting_id, set())
+
     def disconnect(self, meeting_id: str, user_id: str) -> None:
         room = self._rooms.get(meeting_id, {})
         room.pop(user_id, None)
@@ -110,6 +122,7 @@ class ConnectionManager:
             self._room_join_order.pop(meeting_id, None)
             self._room_hosts.pop(meeting_id, None)
             self._permanent_hosts.pop(meeting_id, None)
+            self._admitted_guests.pop(meeting_id, None)
             self.cancel_host_grace(meeting_id)
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
 
