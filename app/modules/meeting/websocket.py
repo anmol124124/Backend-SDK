@@ -426,11 +426,17 @@ async def signaling_endpoint(
         host_connected = bool(host_id and manager.is_connected(room_id, host_id))
         if host_connected:
             logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, host_id, user_id)
-            await manager.send_personal(room_id, host_id, {
+            sent = await manager.send_personal(room_id, host_id, {
                 "type": "knock-request",
                 "from": "server",
                 "payload": {"guestId": user_id, "name": guest_name},
             })
+            if not sent:
+                logger.warning(
+                    "knock-request delivery FAILED (host WS dead) — will retry on host reconnect  "
+                    "room=%s  host=%s  guest=%s",
+                    room_id, host_id, user_id,
+                )
         else:
             logger.warning(
                 "Host not connected — knock-request deferred  room=%s  guest=%s  host_id=%s",
@@ -566,7 +572,7 @@ async def signaling_endpoint(
         while True:
             try:
                 raw = await websocket.receive_text()
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError):
                 break
 
             try:

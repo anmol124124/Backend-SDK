@@ -173,22 +173,24 @@ class ConnectionManager:
 
     async def send_personal(
         self, meeting_id: str, user_id: str, message: dict
-    ) -> None:
-        """Send a message to one specific user in a room."""
+    ) -> bool:
+        """Send a message to one specific user in a room. Returns True on success."""
         ws = self._rooms.get(meeting_id, {}).get(user_id)
         if ws is None:
             logger.warning(
                 "send_personal MISS — user not in room  meeting=%s  user=%s  msg_type=%s  room_users=%s",
                 meeting_id, user_id, message.get("type"), list(self._rooms.get(meeting_id, {}).keys()),
             )
-            return
+            return False
         try:
             await ws.send_json(message)
+            return True
         except Exception as exc:
             logger.warning(
                 "send_personal failed  meeting=%s  user=%s  error=%s",
                 meeting_id, user_id, exc,
             )
+            return False
 
     async def broadcast_to_room(
         self,
