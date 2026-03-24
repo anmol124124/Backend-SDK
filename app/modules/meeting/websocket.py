@@ -421,8 +421,12 @@ async def signaling_endpoint(
             room_id, user_id, guest_name, len(manager.get_pending_ids(room_id)),
         )
 
-        # Check host status before sending knock-waiting so we can include it in payload
-        host_connected = bool(host_id and manager.is_connected(room_id, host_id))
+        # Re-read the current host AFTER add_pending — the host may have joined while
+        # we were awaiting websocket.accept(), which would have run the host's join
+        # coroutine (including its re-send-pending check) before we added ourselves.
+        # Using the fresh value ensures we don't miss that race window.
+        current_host_id = manager.get_host(room_id)
+        host_connected = bool(current_host_id and manager.is_connected(room_id, current_host_id))
 
         try:
             await websocket.send_json({
@@ -438,8 +442,8 @@ async def signaling_endpoint(
 
         # Notify host only if currently connected — otherwise re-sent when host joins
         if host_connected:
-            logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, host_id, user_id)
-            sent = await manager.send_personal(room_id, host_id, {
+            logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, current_host_id, user_id)
+            sent = await manager.send_personal(room_id, current_host_id, {
                 "type": "knock-request",
                 "from": "server",
                 "payload": {"guestId": user_id, "name": guest_name},
@@ -448,12 +452,12 @@ async def signaling_endpoint(
                 logger.warning(
                     "knock-request delivery FAILED (host WS dead) — will retry on host reconnect  "
                     "room=%s  host=%s  guest=%s",
-                    room_id, host_id, user_id,
+                    room_id, current_host_id, user_id,
                 )
         else:
             logger.warning(
                 "Host not connected — knock-request deferred  room=%s  guest=%s  host_id=%s",
-                room_id, user_id, host_id,
+                room_id, user_id, current_host_id,
             )
 
         # Wait for host decision while also watching for guest disconnect (10-min timeout)
