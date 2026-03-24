@@ -410,20 +410,22 @@ async def signaling_endpoint(
             room_id, user_id, guest_name, len(manager.get_pending_ids(room_id)),
         )
 
+        # Check host status before sending knock-waiting so we can include it in payload
+        host_connected = bool(host_id and manager.is_connected(room_id, host_id))
+
         try:
             await websocket.send_json({
                 "type": "knock-waiting",
                 "from": "server",
-                "payload": {"name": guest_name},
+                "payload": {"name": guest_name, "host_present": host_connected},
             })
-            logger.info("Knock-waiting sent  room=%s  guest=%s", room_id, user_id)
+            logger.info("Knock-waiting sent  room=%s  guest=%s  host_present=%s", room_id, user_id, host_connected)
         except Exception as exc:
             logger.warning("Knock-waiting send FAILED  room=%s  guest=%s  error=%s", room_id, user_id, exc)
             manager.remove_pending(room_id, user_id)
             return
 
         # Notify host only if currently connected — otherwise re-sent when host joins
-        host_connected = bool(host_id and manager.is_connected(room_id, host_id))
         if host_connected:
             logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, host_id, user_id)
             sent = await manager.send_personal(room_id, host_id, {
@@ -443,10 +445,10 @@ async def signaling_endpoint(
                 room_id, user_id, host_id,
             )
 
-        # Wait for host decision (2-min timeout)
-        logger.info("Waiting for approval  room=%s  guest=%s  timeout=120s", room_id, user_id)
+        # Wait for host decision (10-min timeout)
+        logger.info("Waiting for approval  room=%s  guest=%s  timeout=600s", room_id, user_id)
         try:
-            await asyncio.wait_for(approval_event.wait(), timeout=120)
+            await asyncio.wait_for(approval_event.wait(), timeout=600)
         except asyncio.TimeoutError:
             logger.warning("Knock timed out  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
             manager.remove_pending(room_id, user_id)

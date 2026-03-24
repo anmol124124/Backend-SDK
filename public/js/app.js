@@ -2237,9 +2237,11 @@ class WebRTCMeetingAPI {
 
       // ── Knock-to-join: guest is waiting for host approval ──────────────────
       case "knock-waiting": {
-        console.log('[WRTC] knock-waiting received — in approval queue');
+        console.log('[WRTC] knock-waiting received — host_present=' + payload.host_present);
         const el = document.getElementById("wrtc-approval-text");
-        if (el) el.textContent = "Waiting for admin to approve your request…";
+        if (el) el.textContent = payload.host_present
+          ? "Waiting for host to admit you…"
+          : "Waiting for host to join the meeting…";
         break;
       }
 
