@@ -393,10 +393,22 @@ async def signaling_endpoint(
     is_reconnect = websocket.query_params.get("reconnect") == "1"
     require_approval = meeting_settings.get("require_approval", True)
 
+    logger.info(
+        "WS connect attempt  room=%s  user=%s  name=%s  token_type=%s  "
+        "is_guest=%s  is_reconnect=%s  require_approval=%s  host_in_room=%s  room_size=%d",
+        room_id, user_id, guest_name, token_type,
+        is_guest, is_reconnect, require_approval,
+        host_id, manager.room_size(room_id),
+    )
+
     if is_guest and not is_reconnect and require_approval:
         # Accept WS but hold guest in waiting room until host approves
         await websocket.accept()
         approval_event = manager.add_pending(room_id, user_id, websocket, guest_name)
+        logger.info(
+            "Knock-pending  room=%s  guest=%s  name=%s  pending_count=%d",
+            room_id, user_id, guest_name, len(manager.get_pending_ids(room_id)),
+        )
 
         try:
             await websocket.send_json({
@@ -404,24 +416,33 @@ async def signaling_endpoint(
                 "from": "server",
                 "payload": {"name": guest_name},
             })
-        except Exception:
+            logger.info("Knock-waiting sent  room=%s  guest=%s", room_id, user_id)
+        except Exception as exc:
+            logger.warning("Knock-waiting send FAILED  room=%s  guest=%s  error=%s", room_id, user_id, exc)
             manager.remove_pending(room_id, user_id)
             return
 
         # Notify host only if currently connected — otherwise re-sent when host joins
-        if host_id and manager.is_connected(room_id, host_id):
+        host_connected = bool(host_id and manager.is_connected(room_id, host_id))
+        if host_connected:
+            logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, host_id, user_id)
             await manager.send_personal(room_id, host_id, {
                 "type": "knock-request",
                 "from": "server",
                 "payload": {"guestId": user_id, "name": guest_name},
             })
-        logger.info("Knock-to-join  room=%s  guest=%s  name=%s  host_online=%s",
-                    room_id, user_id, guest_name, bool(host_id and manager.is_connected(room_id, host_id)))
+        else:
+            logger.warning(
+                "Host not connected — knock-request deferred  room=%s  guest=%s  host_id=%s",
+                room_id, user_id, host_id,
+            )
 
         # Wait for host decision (2-min timeout)
+        logger.info("Waiting for approval  room=%s  guest=%s  timeout=120s", room_id, user_id)
         try:
             await asyncio.wait_for(approval_event.wait(), timeout=120)
         except asyncio.TimeoutError:
+            logger.warning("Knock timed out  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
             manager.remove_pending(room_id, user_id)
             try:
                 await websocket.send_json({
@@ -438,6 +459,7 @@ async def signaling_endpoint(
         manager.remove_pending(room_id, user_id)
 
         if not pending_data or not pending_data.get("approved"):
+            logger.info("Knock denied  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
             try:
                 await websocket.send_json({
                     "type": "knock-denied",
@@ -449,9 +471,14 @@ async def signaling_endpoint(
                 pass
             return
 
+        logger.info("Knock approved  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
         # Approved — add to active room
         manager.add_to_room(room_id, user_id, websocket)
     else:
+        logger.info(
+            "Direct join (no knock)  room=%s  user=%s  is_guest=%s  is_reconnect=%s  require_approval=%s",
+            room_id, user_id, is_guest, is_reconnect, require_approval,
+        )
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 
@@ -516,9 +543,18 @@ async def signaling_endpoint(
 
     # Re-send any pending knock requests to the host (handles host refresh)
     if manager.is_host(room_id, user_id):
-        for pending_uid in manager.get_pending_ids(room_id):
+        pending_ids = manager.get_pending_ids(room_id)
+        logger.info(
+            "Host joined — re-sending pending knocks  room=%s  host=%s  pending=%s",
+            room_id, user_id, pending_ids,
+        )
+        for pending_uid in pending_ids:
             pending = manager.get_pending(room_id, pending_uid)
             if pending:
+                logger.info(
+                    "Re-sending knock-request  room=%s  host=%s  guest=%s  name=%s",
+                    room_id, user_id, pending_uid, pending["name"],
+                )
                 await manager.send_personal(room_id, user_id, {
                     "type": "knock-request",
                     "from": "server",
@@ -563,15 +599,27 @@ async def signaling_endpoint(
             # ── knock approval (host, or participants if setting allows) ──────────
             if msg_type in ("knock-approve", "knock-deny"):
                 can_admit = manager.is_host(room_id, user_id) or meeting_settings.get("allow_participant_admit", False)
+                guest_id = payload.get("guestId")
+                logger.info(
+                    "Knock action received  room=%s  action=%s  guest_id=%s  sender=%s  can_admit=%s  pending_exists=%s",
+                    room_id, msg_type, guest_id, user_id, can_admit,
+                    bool(guest_id and manager.get_pending(room_id, guest_id)),
+                )
                 if can_admit:
-                    guest_id = payload.get("guestId")
                     if guest_id:
                         approved = (msg_type == "knock-approve")
                         manager.resolve_pending(room_id, guest_id, approved)
                         logger.info(
-                            "Knock %s  room=%s  guest=%s  by_host=%s",
-                            "approved" if approved else "denied", room_id, guest_id, user_id,
+                            "Knock resolved  room=%s  guest=%s  approved=%s  by=%s",
+                            room_id, guest_id, approved, user_id,
                         )
+                    else:
+                        logger.warning("Knock action missing guestId  room=%s  sender=%s", room_id, user_id)
+                else:
+                    logger.warning(
+                        "Knock action rejected — sender not allowed  room=%s  sender=%s  is_host=%s",
+                        room_id, user_id, manager.is_host(room_id, user_id),
+                    )
                 continue
 
             # ── kick (host only) ───────────────────────────────────────────────

@@ -5,6 +5,7 @@ Room code format: "abc-defg-hij"  (3-4-3 lowercase letters, like Google Meet)
 e.g. zfv-nidu-hjd
 """
 
+import logging
 import random
 import string
 import uuid as _uuid
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.rsa_tokens import create_guest_token, create_host_token
+
+logger = logging.getLogger(__name__)
 from app.modules.public_meeting.models import PublicMeeting
 from app.modules.public_meeting.schemas import (
     CreateMeetingResponse,
@@ -70,6 +73,7 @@ async def create_meeting(
     await db.commit()
     await db.refresh(meeting)
 
+    logger.info("Public meeting created  room_code=%s  name=%s  user_id=%s", meeting.room_code, meeting.name, user_id)
     return CreateMeetingResponse(
         room_code=meeting.room_code,
         name=meeting.name,
@@ -131,18 +135,23 @@ async def get_host_token(room_code: str, user_id: str, user_name: str, db: Async
         raise HTTPException(status_code=410, detail="Meeting has ended")
 
     token = create_host_token(user_id=user_id, room_code=room_code)
+    logger.info("Host token issued  room_code=%s  user_id=%s  name=%s", room_code, user_id, user_name)
     return TokenResponse(token=token, room_code=room_code, name=user_name)
 
 
 async def get_guest_token(room_code: str, name: str, db: AsyncSession) -> TokenResponse:
+    logger.info("Guest token request  room_code=%s  name=%s", room_code, name)
     meeting = (
         await db.execute(select(PublicMeeting).where(PublicMeeting.room_code == room_code))
     ).scalar_one_or_none()
 
     if meeting is None:
+        logger.warning("Guest token rejected — room not found  room_code=%s", room_code)
         raise HTTPException(status_code=404, detail="Meeting not found")
     if not meeting.is_active:
+        logger.warning("Guest token rejected — meeting ended  room_code=%s", room_code)
         raise HTTPException(status_code=410, detail="Meeting has ended")
 
     token = create_guest_token(name=name, room_code=room_code)
+    logger.info("Guest token issued  room_code=%s  name=%s", room_code, name)
     return TokenResponse(token=token, room_code=room_code, name=name)

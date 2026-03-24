@@ -1814,6 +1814,7 @@ class WebRTCMeetingAPI {
   }
 
   _knockAction(guestId, action) {
+    console.log('[WRTC] knock action sent  action=' + action + '  guestId=' + guestId);
     this._sendWS({ type: action, payload: { guestId } });
     document.getElementById("wrtc-knock-entry-" + guestId)?.remove();
     document.getElementById("wrtc-knock-popup-" + guestId)?.remove();
@@ -1900,13 +1901,22 @@ class WebRTCMeetingAPI {
     this._log("Connecting WebSocket: " + url);
     this._ws = new WebSocket(url);
     this._ws.onopen    = ()  => {
+      console.log('[WRTC] WS opened  room=' + this.roomName + '  name=' + this._myName);
       this._log("WS connected", undefined, "ok");
       this._setStatus("ok");
       // Tell everyone in the room our name
       this._sendWS({ type: "name", payload: { name: this._myName } });
     };
-    this._ws.onclose   = (e) => { this._log(`WS closed — code=${e.code}`, undefined, "warn"); this._setStatus("err"); };
-    this._ws.onerror   = ()  => { this._log("WS error", undefined, "error"); this._setStatus("err"); };
+    this._ws.onclose   = (e) => {
+      console.warn('[WRTC] WS closed  code=' + e.code + '  reason=' + e.reason);
+      this._log(`WS closed — code=${e.code}`, undefined, "warn");
+      this._setStatus("err");
+    };
+    this._ws.onerror   = (e) => {
+      console.error('[WRTC] WS error', e);
+      this._log("WS error", undefined, "error");
+      this._setStatus("err");
+    };
     this._ws.onmessage = (e) => this._handleMessages(e);
   }
 
@@ -2119,13 +2129,35 @@ class WebRTCMeetingAPI {
       }
 
       case "sfu:rtpCapabilities":
+        console.log('[WRTC] sfu:rtpCapabilities received');
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:transportCreated":
+        console.log('[WRTC] sfu:transportCreated  transportId=' + payload?.transportId);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:transportConnected":
+        console.log('[WRTC] sfu:transportConnected  transportId=' + payload?.transportId);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:produced":
+        console.log('[WRTC] sfu:produced  producerId=' + payload?.producerId);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:newProducer":
+        console.log('[WRTC] sfu:newProducer  producerId=' + payload?.producerId + '  peerId=' + payload?.peerId + '  kind=' + payload?.kind);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:consumed":
+        console.log('[WRTC] sfu:consumed  consumerId=' + payload?.consumerId + '  kind=' + payload?.kind);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:consumerResumed":
+        console.log('[WRTC] sfu:consumerResumed  consumerId=' + payload?.consumerId);
+        this._log(`${type} (SFU stub)`);
+        break;
       case "sfu:producers":
+        console.log('[WRTC] sfu:producers  count=' + (payload?.producers?.length ?? 0));
         this._log(`${type} (SFU stub)`);
         break;
 
@@ -2203,6 +2235,7 @@ class WebRTCMeetingAPI {
 
       // ── Knock-to-join: guest is waiting for host approval ──────────────────
       case "knock-waiting": {
+        console.log('[WRTC] knock-waiting received — in approval queue');
         const el = document.getElementById("wrtc-approval-text");
         if (el) el.textContent = "Waiting for admin to approve your request…";
         break;
@@ -2227,6 +2260,7 @@ class WebRTCMeetingAPI {
       // ── Knock-to-join: host sees approval request ──────────────────────────
       case "knock-request": {
         const { guestId, name: knockName } = payload;
+        console.log('[WRTC] knock-request received  guestId=' + guestId + '  name=' + knockName);
         this._showKnockRequest(guestId, knockName);
         break;
       }
@@ -2265,8 +2299,13 @@ class WebRTCMeetingAPI {
   // UTILITIES
   // ═══════════════════════════════════════════════════════════════════════
   _sendWS(msg) {
-    if (this._ws?.readyState === WebSocket.OPEN) this._ws.send(JSON.stringify(msg));
-    else this._log("WS not open — dropped " + msg.type, undefined, "warn");
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      console.log('[WRTC] sendWS  type=' + msg.type + '  wsState=OPEN');
+      this._ws.send(JSON.stringify(msg));
+    } else {
+      console.warn('[WRTC] sendWS DROPPED  type=' + msg.type + '  wsState=' + this._ws?.readyState);
+      this._log("WS not open — dropped " + msg.type, undefined, "warn");
+    }
   }
 
   _addRemoteVideo(userId, stream) {

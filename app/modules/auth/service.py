@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import HTTPException, status
@@ -8,18 +9,18 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.modules.auth.models import User
 from app.modules.auth.schemas import LoginRequest, SignupRequest, TokenResponse
 
+logger = logging.getLogger(__name__)
+
 
 class AuthService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
     async def signup(self, payload: SignupRequest) -> User:
-        """
-        Create a new user account.
-        Raises 409 if the email is already registered.
-        """
+        logger.info("Signup attempt  email=%s", payload.email)
         existing = await self.db.execute(select(User).where(User.email == payload.email))
         if existing.scalar_one_or_none():
+            logger.warning("Signup rejected — email already registered  email=%s", payload.email)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already registered",
@@ -30,25 +31,25 @@ class AuthService:
             password_hash=hash_password(payload.password),
         )
         self.db.add(user)
-        await self.db.flush()  # assign user.id without committing
+        await self.db.flush()
+        logger.info("Signup OK  email=%s  user_id=%s", payload.email, user.id)
         return user
 
     async def login(self, payload: LoginRequest) -> TokenResponse:
-        """
-        Verify email + password and return a signed JWT access token.
-        Always returns 401 for both wrong email and wrong password
-        (avoids user enumeration).
-        """
+        logger.info("Login attempt  email=%s", payload.email)
         result = await self.db.execute(select(User).where(User.email == payload.email))
         user = result.scalar_one_or_none()
 
         if not user or not verify_password(payload.password, user.password_hash):
+            logger.warning("Login failed  email=%s  reason=%s",
+                           payload.email, "user not found" if not user else "wrong password")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        logger.info("Login OK  email=%s  user_id=%s", payload.email, user.id)
         return TokenResponse(access_token=create_access_token(str(user.id)))
 
     async def get_user_by_id(self, user_id: uuid.UUID) -> User:

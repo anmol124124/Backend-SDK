@@ -16,9 +16,13 @@ Usage:
     ...
 """
 
+import logging
+
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class MediasoupClient:
@@ -78,23 +82,22 @@ class MediasoupClient:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def ensure_room(self, room_id: str) -> dict:
-        """
-        Create room if it doesn't exist. Returns router RTP capabilities.
-        Call this when a user connects to the WebSocket.
-        """
-        return await self._post(f"/api/rooms/{room_id}/ensure")
+        logger.info("SFU ensure_room  room=%s", room_id)
+        result = await self._post(f"/api/rooms/{room_id}/ensure")
+        logger.info("SFU ensure_room OK  room=%s", room_id)
+        return result
 
     async def create_transport(
         self, room_id: str, peer_id: str, direction: str
     ) -> dict:
-        """
-        Create a WebRTC transport for send or recv.
-        Returns ice/dtls parameters that the browser needs to create its transport.
-        """
-        return await self._post(
+        logger.info("SFU create_transport  room=%s  peer=%s  direction=%s", room_id, peer_id, direction)
+        result = await self._post(
             f"/api/rooms/{room_id}/transports",
             {"peerId": peer_id, "direction": direction},
         )
+        logger.info("SFU create_transport OK  room=%s  peer=%s  direction=%s  transportId=%s",
+                    room_id, peer_id, direction, result.get("transportId"))
+        return result
 
     async def connect_transport(
         self,
@@ -103,11 +106,13 @@ class MediasoupClient:
         transport_id: str,
         dtls_parameters: dict,
     ) -> dict:
-        """Provide the browser's DTLS fingerprint to complete the transport handshake."""
-        return await self._post(
+        logger.info("SFU connect_transport  room=%s  peer=%s  transportId=%s", room_id, peer_id, transport_id)
+        result = await self._post(
             f"/api/rooms/{room_id}/transports/{transport_id}/connect",
             {"peerId": peer_id, "dtlsParameters": dtls_parameters},
         )
+        logger.info("SFU connect_transport OK  room=%s  peer=%s  transportId=%s", room_id, peer_id, transport_id)
+        return result
 
     async def produce(
         self,
@@ -118,11 +123,8 @@ class MediasoupClient:
         rtp_parameters: dict,
         app_data: dict | None = None,
     ) -> dict:
-        """
-        Tell mediasoup a browser has started sending a media track.
-        Returns producerId.
-        """
-        return await self._post(
+        logger.info("SFU produce  room=%s  peer=%s  kind=%s  transportId=%s", room_id, peer_id, kind, transport_id)
+        result = await self._post(
             f"/api/rooms/{room_id}/transports/{transport_id}/produce",
             {
                 "peerId": peer_id,
@@ -131,6 +133,9 @@ class MediasoupClient:
                 "appData": app_data or {},
             },
         )
+        logger.info("SFU produce OK  room=%s  peer=%s  kind=%s  producerId=%s",
+                    room_id, peer_id, kind, result.get("producerId"))
+        return result
 
     async def consume(
         self,
@@ -140,11 +145,9 @@ class MediasoupClient:
         transport_id: str,
         rtp_capabilities: dict,
     ) -> dict:
-        """
-        Create a consumer so a peer can receive a remote producer's stream.
-        Returns consumerId + rtpParameters needed by the browser.
-        """
-        return await self._post(
+        logger.info("SFU consume  room=%s  consumerPeer=%s  producerId=%s  transportId=%s",
+                    room_id, consumer_peer_id, producer_id, transport_id)
+        result = await self._post(
             f"/api/rooms/{room_id}/consumers",
             {
                 "consumerPeerId": consumer_peer_id,
@@ -153,29 +156,34 @@ class MediasoupClient:
                 "rtpCapabilities": rtp_capabilities,
             },
         )
+        logger.info("SFU consume OK  room=%s  consumerPeer=%s  consumerId=%s  kind=%s",
+                    room_id, consumer_peer_id, result.get("consumerId"), result.get("kind"))
+        return result
 
     async def resume_consumer(
         self, room_id: str, peer_id: str, consumer_id: str
     ) -> dict:
-        """Unpauses a consumer — call after the recv transport is confirmed connected."""
-        return await self._post(
+        logger.info("SFU resume_consumer  room=%s  peer=%s  consumerId=%s", room_id, peer_id, consumer_id)
+        result = await self._post(
             f"/api/rooms/{room_id}/consumers/{consumer_id}/resume",
             {"peerId": peer_id},
         )
+        logger.info("SFU resume_consumer OK  room=%s  peer=%s  consumerId=%s", room_id, peer_id, consumer_id)
+        return result
 
     async def get_producers(self, room_id: str, exclude_peer_id: str) -> dict:
-        """
-        Get all active producers in a room (excluding the requesting peer).
-        Used on join so the new user can subscribe to existing streams.
-        """
-        return await self._get(
+        logger.info("SFU get_producers  room=%s  excludePeer=%s", room_id, exclude_peer_id)
+        result = await self._get(
             f"/api/rooms/{room_id}/producers",
             {"excludePeerId": exclude_peer_id},
         )
+        logger.info("SFU get_producers OK  room=%s  count=%d", room_id, len(result.get("producers", [])))
+        return result
 
     async def remove_peer(self, room_id: str, peer_id: str) -> None:
-        """Clean up all transports/producers/consumers for a disconnected peer."""
+        logger.info("SFU remove_peer  room=%s  peer=%s", room_id, peer_id)
         await self._delete(f"/api/rooms/{room_id}/peers/{peer_id}")
+        logger.info("SFU remove_peer OK  room=%s  peer=%s", room_id, peer_id)
 
 
 # Module-level singleton — one shared client per process

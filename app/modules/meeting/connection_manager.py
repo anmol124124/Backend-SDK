@@ -67,6 +67,10 @@ class ConnectionManager:
         self._pending[meeting_id][user_id] = {
             "ws": websocket, "name": name, "event": event, "approved": False,
         }
+        logger.info(
+            "Pending add  meeting=%s  guest=%s  name=%s  total_pending=%d",
+            meeting_id, user_id, name, len(self._pending[meeting_id]),
+        )
         return event
 
     def resolve_pending(self, meeting_id: str, user_id: str, approved: bool) -> None:
@@ -75,11 +79,19 @@ class ConnectionManager:
         if entry:
             entry["approved"] = approved
             entry["event"].set()
+            logger.info("Pending resolved  meeting=%s  guest=%s  approved=%s", meeting_id, user_id, approved)
+        else:
+            logger.warning(
+                "Pending resolve MISS — guest not in pending list  meeting=%s  guest=%s  "
+                "pending_ids=%s",
+                meeting_id, user_id, list(self._pending.get(meeting_id, {}).keys()),
+            )
 
     def remove_pending(self, meeting_id: str, user_id: str) -> None:
         self._pending.get(meeting_id, {}).pop(user_id, None)
         if not self._pending.get(meeting_id):
             self._pending.pop(meeting_id, None)
+        logger.info("Pending removed  meeting=%s  guest=%s", meeting_id, user_id)
 
     def get_pending(self, meeting_id: str, user_id: str) -> dict | None:
         return self._pending.get(meeting_id, {}).get(user_id)
@@ -165,6 +177,10 @@ class ConnectionManager:
         """Send a message to one specific user in a room."""
         ws = self._rooms.get(meeting_id, {}).get(user_id)
         if ws is None:
+            logger.warning(
+                "send_personal MISS — user not in room  meeting=%s  user=%s  msg_type=%s  room_users=%s",
+                meeting_id, user_id, message.get("type"), list(self._rooms.get(meeting_id, {}).keys()),
+            )
             return
         try:
             await ws.send_json(message)
