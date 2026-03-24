@@ -1818,6 +1818,8 @@ class WebRTCMeetingAPI {
     this._sendWS({ type: action, payload: { guestId } });
     document.getElementById("wrtc-knock-entry-" + guestId)?.remove();
     document.getElementById("wrtc-knock-popup-" + guestId)?.remove();
+    const list = document.getElementById("wrtc-knock-list");
+    if (list && !list.querySelectorAll(".wrtc-knock-entry").length) this._clearKnockHeader();
   }
 
   _updateGrid() {
