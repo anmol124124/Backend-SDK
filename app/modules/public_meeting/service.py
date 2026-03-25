@@ -133,6 +133,8 @@ async def get_host_token(room_code: str, user_id: str, user_name: str, db: Async
         raise HTTPException(status_code=404, detail="Meeting not found")
     if not meeting.is_active:
         raise HTTPException(status_code=410, detail="Meeting has ended")
+    if str(meeting.created_by) != str(user_id):
+        raise HTTPException(status_code=403, detail="Only the meeting creator can get a host token")
 
     token = create_host_token(user_id=user_id, room_code=room_code)
     logger.info("Host token issued  room_code=%s  user_id=%s  name=%s", room_code, user_id, user_name)
