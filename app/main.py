@@ -90,7 +90,7 @@ async def meeting_page(room_id: str) -> HTMLResponse:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="/public/js/app.js"></script>
+  <script src="/public/js/app.js?v=3"></script>
   <style>
     html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}
   </style>

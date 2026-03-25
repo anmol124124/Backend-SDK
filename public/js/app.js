@@ -424,7 +424,10 @@ class WebRTCMeetingAPI {
     }
     this._buildUI();
     const localVid = document.getElementById("wrtc-local-video");
-    if (localVid) localVid.srcObject = this._localStream;
+    if (localVid) {
+      localVid.srcObject = this._localStream;
+      localVid.style.transform = "scaleX(-1)";
+    }
     if (!this._camEnabled) {
       document.getElementById("wrtc-local-video").style.display = "none";
       document.getElementById("wrtc-pip-avatar").style.display  = "flex";
@@ -555,6 +558,7 @@ class WebRTCMeetingAPI {
       .wrtc-tile video{
         width:100%;height:100%;object-fit:cover;display:block;background:#000;
       }
+      #wrtc-local-video{transform:scaleX(-1)}
       .wrtc-tile.speaking{
         box-shadow:0 0 0 3px #1a73e8,0 0 20px rgba(26,115,232,.4);
       }
@@ -887,7 +891,7 @@ class WebRTCMeetingAPI {
         <div class="wrtc-grid" id="wrtc-grid">
           <!-- LOCAL TILE — always in the grid -->
           <div class="wrtc-tile wrtc-local-tile" id="wrtc-local-tile">
-            <video id="wrtc-local-video" autoplay muted playsinline></video>
+            <video id="wrtc-local-video" autoplay muted playsinline style="transform:scaleX(-1)"></video>
             <div class="wrtc-pip-avatar" id="wrtc-pip-avatar">
               <span id="wrtc-pip-avatar-text"></span>
             </div>
@@ -1983,6 +1987,7 @@ class WebRTCMeetingAPI {
         break;
 
       case "join":
+        if (payload.name) this._peerNames[payload.user_id] = payload.name;
         this._participants[payload.user_id] = this._displayName(payload.user_id);
         this._renderParticipants();
         // Tell the new joiner our name

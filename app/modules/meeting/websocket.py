@@ -627,7 +627,7 @@ async def signaling_endpoint(
     # ── Step 7: notify others ─────────────────────────────────────────────────
     await manager.broadcast_to_room(
         room_id,
-        {"type": "join", "from": user_id, "payload": {"user_id": user_id}},
+        {"type": "join", "from": user_id, "payload": {"user_id": user_id, "name": guest_name}},
         exclude_user_id=user_id,
     )
 
