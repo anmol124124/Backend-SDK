@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     # ── Backend public URL ────────────────────────────────────────────────
     BACKEND_PUBLIC_URL: str = "http://localhost:8000"
 
+    # ── Dashboard URL ─────────────────────────────────────────────────────
+    DASHBOARD_URL: str = "http://localhost:5174"
+
+    # ── Stripe ────────────────────────────────────────────────────────────
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_PUBLISHABLE_KEY: str = ""
+
     # ── Secret validation ─────────────────────────────────────────────────
     # Fail at startup if secrets are missing or left as placeholder values.
     # This prevents deploying with known-insecure defaults.

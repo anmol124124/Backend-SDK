@@ -39,6 +39,7 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
+    plan: str | None = None
     created_at: datetime
 
     model_config = {
@@ -47,6 +48,7 @@ class UserResponse(BaseModel):
             "example": {
                 "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
                 "email": "alice@example.com",
+                "plan": "basic",
                 "created_at": "2026-03-16T10:00:00Z",
             }
         },

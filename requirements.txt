@@ -27,3 +27,6 @@ httpx==0.27.0
 
 # Static file serving
 aiofiles==23.2.1
+
+# Stripe payments
+stripe==10.4.0
