@@ -574,6 +574,9 @@ async def signaling_endpoint(
         # First time this meeting has a host — record as permanent host
         if manager.get_permanent_host(room_id) is None:
             manager.set_permanent_host(room_id, user_id)
+            logger.info("Host initialized the meeting  room=%s  host=%s", room_id, user_id)
+        else:
+            logger.info("Host rejoined the meeting  room=%s  host=%s", room_id, user_id)
         # Cancel any pending grace period (host reconnected in time)
         manager.cancel_host_grace(room_id)
         prev_host = manager.get_host(room_id)
@@ -616,7 +619,7 @@ async def signaling_endpoint(
                 "sfuAvailable": sfu_available,
                 "myId": user_id,
                 "isHost": manager.is_host(room_id, user_id),
-                "settings": meeting_settings,
+                "settings": {k: v for k, v in meeting_settings.items() if k != "host_user_id"},
             },
         },
     )

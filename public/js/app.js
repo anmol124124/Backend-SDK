@@ -1968,6 +1968,7 @@ class WebRTCMeetingAPI {
         this._myUserId   = payload.myId || null;
         this._isHost     = payload.isHost || false;
         this._settings   = payload.settings || {};
+        console.log('[WRTC] user-list received  room=' + this.roomName + '  myId=' + this._myUserId + '  isHost=' + this._isHost);
         // Only now is the user admitted — safe to persist name for reconnect
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
