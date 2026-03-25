@@ -1973,6 +1973,9 @@ class WebRTCMeetingAPI {
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
+        // Re-announce our name — the initial name message sent on WS open is discarded
+        // during the knock-wait period, so existing participants wouldn't know it.
+        this._sendWS({ type: "name", payload: { name: this._myName } });
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
