@@ -179,6 +179,16 @@ class ConnectionManager:
     def is_connected(self, meeting_id: str, user_id: str) -> bool:
         return user_id in self._rooms.get(meeting_id, {})
 
+    def get_session_id_for_base(self, meeting_id: str, base_user_id: str) -> str | None:
+        """Return the connected session user_id for a given base user ID (UUID without suffix).
+        User IDs are stored as '<base_uuid>_<8-char suffix>' in the room.
+        """
+        prefix = base_user_id + "_"
+        for uid in self._rooms.get(meeting_id, {}):
+            if uid.startswith(prefix):
+                return uid
+        return None
+
     def room_size(self, meeting_id: str) -> int:
         return len(self._rooms.get(meeting_id, {}))
 

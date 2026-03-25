@@ -384,12 +384,31 @@ async def signaling_endpoint(
                     "allow_chat":                   pm.allow_chat,
                     "allow_screen_share":           pm.allow_screen_share,
                     "allow_unmute_self":            pm.allow_unmute_self,
+                    # Authoritative host — from DB, not in-memory WS state
+                    "host_user_id":                 str(pm.created_by) if pm.created_by else None,
                 }
 
     # ── Step 5: knock-to-join for public guests (if host already in room) ───────
     # Prefer the name the guest typed in the lobby (sent as WS query param)
     guest_name  = websocket.query_params.get("name") or getattr(user, "name", None) or "Guest"
-    host_id     = manager.get_host(room_id)
+
+    # Resolve the current host:
+    # 1. Try in-memory (fastest — already tracked from WS connection)
+    # 2. Fall back to DB-authoritative created_by — find their active session by base user ID.
+    #    This handles the case where the host IS connected but _room_hosts was cleared
+    #    (e.g. after a brief disconnect/reconnect cycle that reset in-memory state).
+    host_id = manager.get_host(room_id)
+    if host_id is None:
+        db_host_base = meeting_settings.get("host_user_id")
+        if db_host_base:
+            session_id = manager.get_session_id_for_base(room_id, db_host_base)
+            if session_id:
+                host_id = session_id
+                manager.set_host(room_id, session_id)
+                logger.info(
+                    "Host resolved from DB  room=%s  host_base=%s  session=%s",
+                    room_id, db_host_base, session_id,
+                )
 
     is_reconnect = websocket.query_params.get("reconnect") == "1"
     require_approval = meeting_settings.get("require_approval", True)
@@ -426,6 +445,13 @@ async def signaling_endpoint(
         # coroutine (including its re-send-pending check) before we added ourselves.
         # Using the fresh value ensures we don't miss that race window.
         current_host_id = manager.get_host(room_id)
+        if current_host_id is None:
+            db_host_base = meeting_settings.get("host_user_id")
+            if db_host_base:
+                session_id = manager.get_session_id_for_base(room_id, db_host_base)
+                if session_id:
+                    current_host_id = session_id
+                    manager.set_host(room_id, session_id)
         host_connected = bool(current_host_id and manager.is_connected(room_id, current_host_id))
 
         try:
@@ -456,8 +482,12 @@ async def signaling_endpoint(
                 )
         else:
             logger.warning(
-                "Host not connected — knock-request deferred  room=%s  guest=%s  host_id=%s",
+                "Host not connected — knock-request deferred  room=%s  guest=%s  host_id=%s  "
+                "room_size=%d  permanent_host=%s  pending_count=%d",
                 room_id, user_id, current_host_id,
+                manager.room_size(room_id),
+                manager.get_permanent_host(room_id),
+                len(manager.get_pending_ids(room_id)),
             )
 
         # Wait for host decision while also watching for guest disconnect (10-min timeout)
