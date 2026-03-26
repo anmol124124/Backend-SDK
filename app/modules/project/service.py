@@ -157,34 +157,11 @@ class ProjectService:
 
     @staticmethod
     def generate_embed_html(project: Project, backend_url: str) -> str:
-        """Host embed HTML — uses the host token (role: host)."""
-        backend_url = backend_url.rstrip("/")
-        return f"""<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{project.name}</title>
-    <script src="{backend_url}/public/js/app.js?ngrok-skip-browser-warning=true" defer></script>
-    <style>html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}</style>
-  </head>
-  <body>
-    <div id="meeting-container"></div>
-    <script>
-      window.onload = () => {{
-        new WebRTCMeetingAPI({{
-          roomName:   "{project.room_name}",
-          token:      "{project.embed_token}",
-          parentNode: document.querySelector('#meeting-container'),
-        }});
-      }};
-    </script>
-  </body>
-</html>"""
-
-    @staticmethod
-    def generate_guest_html(project: Project, backend_url: str) -> str:
-        """Guest embed HTML — uses the guest token (role: guest), triggers knock-to-join."""
+        """
+        Combined embed HTML — embeds both host and guest tokens.
+        URL param ?role=host  → host token (direct join, can admit guests).
+        No param / anything else → guest token (knock-to-join, waits for approval).
+        """
         backend_url = backend_url.rstrip("/")
         guest_token = _make_guest_token(project.id)
         return f"""<!DOCTYPE html>
@@ -199,13 +176,22 @@ class ProjectService:
   <body>
     <div id="meeting-container"></div>
     <script>
-      window.onload = () => {{
+      var HOST_TOKEN  = "{project.embed_token}";
+      var GUEST_TOKEN = "{guest_token}";
+      window.onload = function() {{
+        var role  = new URLSearchParams(window.location.search).get('role');
+        var token = (role === 'host') ? HOST_TOKEN : GUEST_TOKEN;
         new WebRTCMeetingAPI({{
           roomName:   "{project.room_name}",
-          token:      "{guest_token}",
+          token:      token,
           parentNode: document.querySelector('#meeting-container'),
         }});
       }};
     </script>
   </body>
 </html>"""
+
+    @staticmethod
+    def generate_guest_html(project: Project, backend_url: str) -> str:
+        """Kept for backward compat — returns same combined HTML."""
+        return ProjectService.generate_embed_html(project, backend_url)
