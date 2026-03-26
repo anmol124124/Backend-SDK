@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", parentNode, onLeave = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", parentNode, onLeave = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -22,10 +22,13 @@ class WebRTCMeetingAPI {
     }
     this.serverUrl = this._httpBase.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
-    this.roomName   = roomName;
-    this.token      = token;
-    this.parentNode = parentNode;
-    this._onLeave   = onLeave;
+    this.roomName    = roomName;
+    this.token       = token;
+    this._hostToken  = hostToken;
+    this._guestToken = guestToken;
+    this._shareUrl   = shareUrl;
+    this.parentNode  = parentNode;
+    this._onLeave    = onLeave;
 
     // WebRTC state
     this._ws                = null;
@@ -104,6 +107,12 @@ class WebRTCMeetingAPI {
   }
 
   _init() {
+    // If both hostToken and guestToken are provided → show role selection first
+    if (this._hostToken && this._guestToken) {
+      this._showRoleSelection();
+      return;
+    }
+
     const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
 
     // Public meeting tokens (RS256) don't belong to any project — skip embed-check
@@ -122,6 +131,70 @@ class WebRTCMeetingAPI {
         if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
       })
       .catch((err) => { console.error('[WRTC] embed-check FAILED (catch):', err); this._showAccessDenied(); });
+  }
+
+  _showRoleSelection() {
+    this.parentNode.innerHTML = `
+      <style>
+        .wrtc-rs*{box-sizing:border-box;margin:0;padding:0}
+        .wrtc-rs{
+          position:fixed;inset:0;
+          background:linear-gradient(160deg,#1a1c22 0%,#202124 100%);
+          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;gap:32px;
+        }
+        .wrtc-rs-title{font-size:22px;font-weight:700;color:#e8eaed;text-align:center}
+        .wrtc-rs-sub{font-size:14px;color:#9aa0a6;text-align:center;margin-top:8px}
+        .wrtc-rs-cards{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+        .wrtc-rs-card{
+          background:#25262b;border:1px solid rgba(255,255,255,.08);
+          border-radius:16px;padding:28px 32px;
+          display:flex;flex-direction:column;align-items:center;gap:12px;
+          cursor:pointer;transition:all .2s;width:200px;color:#e8eaed;
+        }
+        .wrtc-rs-card:hover{transform:translateY(-4px);border-color:rgba(26,115,232,.5);box-shadow:0 12px 32px rgba(0,0,0,.4)}
+        .wrtc-rs-host{border-color:rgba(26,115,232,.35);background:linear-gradient(160deg,#1c2e4a,#1a2438)}
+        .wrtc-rs-icon{font-size:32px}
+        .wrtc-rs-name{font-size:16px;font-weight:600}
+        .wrtc-rs-desc{font-size:12px;color:#9aa0a6;text-align:center;line-height:1.5}
+      </style>
+      <div class="wrtc-rs">
+        <div>
+          <div class="wrtc-rs-title">${this.roomName}</div>
+          <div class="wrtc-rs-sub">How would you like to join?</div>
+        </div>
+        <div class="wrtc-rs-cards">
+          <div class="wrtc-rs-card wrtc-rs-host" id="wrtc-pick-host">
+            <div class="wrtc-rs-icon">🎙️</div>
+            <div class="wrtc-rs-name">Create Meeting</div>
+            <div class="wrtc-rs-desc">Start as host and admit participants</div>
+          </div>
+          <div class="wrtc-rs-card" id="wrtc-pick-guest">
+            <div class="wrtc-rs-icon">👋</div>
+            <div class="wrtc-rs-name">Join Meeting</div>
+            <div class="wrtc-rs-desc">Join as participant, wait for host approval</div>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById('wrtc-pick-host').addEventListener('click', () => {
+      this.token = this._hostToken;
+      this._proceedToLobby();
+    });
+    document.getElementById('wrtc-pick-guest').addEventListener('click', () => {
+      this.token = this._guestToken;
+      this._proceedToLobby();
+    });
+  }
+
+  _proceedToLobby() {
+    const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
+    fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
+      .then(res => {
+        if (!res.ok) { this._showAccessDenied(); return; }
+        if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
+      })
+      .catch(() => this._showAccessDenied());
   }
 
   _showReconnecting(name) {
@@ -862,6 +935,44 @@ class WebRTCMeetingAPI {
         pointer-events:none;white-space:nowrap;
       }
       .wrtc-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+      /* ── INVITE MODAL ── */
+      .wrtc-invite-overlay{
+        position:fixed;inset:0;z-index:200;
+        background:rgba(0,0,0,.6);backdrop-filter:blur(4px);
+        display:flex;align-items:center;justify-content:center;
+      }
+      .wrtc-invite-box{
+        background:#2d2e31;border-radius:16px;padding:32px;
+        width:90%;max-width:440px;
+        box-shadow:0 16px 48px rgba(0,0,0,.6);
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      }
+      .wrtc-invite-title{
+        font-size:18px;font-weight:700;color:#e8eaed;margin-bottom:6px;
+      }
+      .wrtc-invite-sub{
+        font-size:13px;color:#9aa0a6;margin-bottom:20px;
+      }
+      .wrtc-invite-url{
+        background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.12);
+        border-radius:10px;padding:12px 14px;
+        font-size:13px;font-family:monospace;color:#4d94ff;
+        word-break:break-all;line-height:1.5;margin-bottom:16px;
+      }
+      .wrtc-invite-actions{display:flex;gap:10px;}
+      .wrtc-invite-copy{
+        flex:1;background:#1a73e8;color:#fff;border:none;
+        border-radius:10px;padding:11px;font-size:14px;font-weight:600;cursor:pointer;
+        transition:background .15s;
+      }
+      .wrtc-invite-copy:hover{background:#1557b0}
+      .wrtc-invite-close{
+        background:rgba(255,255,255,.08);color:#e8eaed;border:none;
+        border-radius:10px;padding:11px 18px;font-size:14px;cursor:pointer;
+        transition:background .15s;
+      }
+      .wrtc-invite-close:hover{background:rgba(255,255,255,.14)}
     </style>
 
     <div class="wrtc" id="wrtc-root">
@@ -1064,6 +1175,13 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
+        <!-- Invite -->
+        <button class="wrtc-btn" id="wrtc-btn-invite" title="Invite people">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
+        </button>
+
         <!-- Leave -->
         <button class="wrtc-btn wrtc-btn-leave" id="wrtc-btn-leave" title="Leave call">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -1083,6 +1201,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-pip-avatar-text").textContent = this._myName
       ? this._myName.slice(0, 2).toUpperCase() : "YO";
     document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
+    document.getElementById("wrtc-btn-invite").addEventListener("click", () => this._showInvite());
     document.getElementById("wrtc-btn-muteall").addEventListener("click", () => {
       this._allMicsMuted = true;
       this._sendWS({ type: "mute-all", payload: {} });
@@ -1658,6 +1777,35 @@ class WebRTCMeetingAPI {
 
   // ═══════════════════════════════════════════════════════════════════════
   // TOAST
+  // ═══════════════════════════════════════════════════════════════════════
+  _showInvite() {
+    const url = this._shareUrl || (window.location.origin + '/sdk/join/' + this.roomName);
+    const overlay = document.createElement('div');
+    overlay.className = 'wrtc-invite-overlay';
+    overlay.id = 'wrtc-invite-overlay';
+    overlay.innerHTML = `
+      <div class="wrtc-invite-box">
+        <div class="wrtc-invite-title">Invite People</div>
+        <div class="wrtc-invite-sub">Share this link — guests will knock to join</div>
+        <div class="wrtc-invite-url" id="wrtc-invite-url-text">${url}</div>
+        <div class="wrtc-invite-actions">
+          <button class="wrtc-invite-copy" id="wrtc-invite-copy-btn">Copy Link</button>
+          <button class="wrtc-invite-close" id="wrtc-invite-close-btn">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('wrtc-invite-copy-btn').addEventListener('click', () => {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById('wrtc-invite-copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Link'; }, 2000);
+      });
+    });
+    const close = () => { const el = document.getElementById('wrtc-invite-overlay'); if (el) el.remove(); };
+    document.getElementById('wrtc-invite-close-btn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   _toast(msg) {
     const el = document.getElementById("wrtc-toast");

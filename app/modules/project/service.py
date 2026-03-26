@@ -163,7 +163,8 @@ class ProjectService:
         No param / anything else → guest token (knock-to-join, waits for approval).
         """
         backend_url = backend_url.rstrip("/")
-        guest_token = _make_guest_token(project.id)
+        public_meet_url = settings.PUBLIC_MEET_URL.rstrip("/")
+        share_url = f"{public_meet_url}/sdk/join/{project.room_name}"
         return f"""<!DOCTYPE html>
 <html>
   <head>
@@ -171,21 +172,76 @@ class ProjectService:
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{project.name}</title>
     <script src="{backend_url}/public/js/app.js?ngrok-skip-browser-warning=true" defer></script>
-    <style>html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}</style>
+    <style>
+      html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}
+      #wrtc-pre {{
+        position: fixed; inset: 0;
+        background: linear-gradient(160deg, #1a1c22, #202124);
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }}
+      #wrtc-pre h2 {{ color: #e8eaed; font-size: 24px; font-weight: 700; margin: 0; }}
+      #wrtc-pre p {{ color: #9aa0a6; font-size: 14px; margin: 0; }}
+      #wrtc-create-btn {{
+        background: linear-gradient(90deg, #1a73e8, #4d94ff);
+        color: #fff; border: none; border-radius: 12px;
+        padding: 14px 36px; font-size: 16px; font-weight: 600;
+        cursor: pointer; box-shadow: 0 4px 16px rgba(26,115,232,.4);
+        transition: transform .15s, box-shadow .15s;
+      }}
+      #wrtc-create-btn:hover {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,115,232,.5); }}
+      #wrtc-share-bar {{
+        display: none; flex-direction: column; align-items: center; gap: 8px;
+        background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+        border-radius: 12px; padding: 16px 24px; max-width: 480px; width: 90%;
+      }}
+      #wrtc-share-bar span {{ color: #9aa0a6; font-size: 13px; }}
+      #wrtc-share-url {{
+        color: #4d94ff; font-size: 13px; font-family: monospace;
+        word-break: break-all; text-align: center;
+      }}
+      #wrtc-copy-btn {{
+        background: rgba(26,115,232,.15); color: #4d94ff;
+        border: 1px solid rgba(26,115,232,.3); border-radius: 8px;
+        padding: 6px 18px; font-size: 13px; cursor: pointer;
+      }}
+    </style>
   </head>
   <body>
     <div id="meeting-container"></div>
+    <div id="wrtc-pre">
+      <div style="text-align:center">
+        <h2>{project.name}</h2>
+        <p>Start the meeting and share the link with participants</p>
+      </div>
+      <div id="wrtc-share-bar">
+        <span>Share this link with guests:</span>
+        <div id="wrtc-share-url">{share_url}</div>
+        <button id="wrtc-copy-btn" onclick="navigator.clipboard.writeText('{share_url}').then(function(){{document.getElementById('wrtc-copy-btn').textContent='Copied!';setTimeout(function(){{document.getElementById('wrtc-copy-btn').textContent='Copy Link'}},2000)}})">Copy Link</button>
+      </div>
+      <button id="wrtc-create-btn">Create Meeting</button>
+    </div>
     <script>
-      var HOST_TOKEN  = "{project.embed_token}";
-      var GUEST_TOKEN = "{guest_token}";
-      window.onload = function() {{
-        var role  = new URLSearchParams(window.location.search).get('role');
-        var token = (role === 'host') ? HOST_TOKEN : GUEST_TOKEN;
+      document.getElementById('wrtc-create-btn').onclick = function() {{
+        document.getElementById('wrtc-pre').style.display = 'none';
+        document.getElementById('meeting-container').style.position = 'fixed';
+        document.getElementById('meeting-container').style.inset = '0';
         new WebRTCMeetingAPI({{
           roomName:   "{project.room_name}",
-          token:      token,
+          token:      "{project.embed_token}",
+          shareUrl:   "{share_url}",
           parentNode: document.querySelector('#meeting-container'),
         }});
+        var bar = document.getElementById('wrtc-share-bar');
+        bar.style.display = 'flex';
+        bar.style.position = 'fixed';
+        bar.style.bottom = '16px';
+        bar.style.left = '50%';
+        bar.style.transform = 'translateX(-50%)';
+        bar.style.zIndex = '9999';
+        bar.style.background = 'rgba(32,33,36,.95)';
+        bar.style.backdropFilter = 'blur(8px)';
       }};
     </script>
   </body>

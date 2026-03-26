@@ -18,9 +18,12 @@ from app.modules.project.schemas import (
     EmbedResponse,
     ProjectCreateRequest,
     ProjectResponse,
+    SdkJoinResponse,
 )
-from app.modules.project.service import ProjectService
+from app.modules.project.service import ProjectService, _make_guest_token
 from app.modules.project.embed_check import check_embed_domain
+from app.modules.project.models import Project
+from sqlalchemy import select
 
 router = APIRouter(prefix="/projects", tags=["Projects"], redirect_slashes=False)
 
@@ -84,6 +87,27 @@ async def get_embed(
     html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
     guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
     return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
+
+
+# ── Public SDK join endpoint (no auth — for guests via public meet) ───────────
+
+@router.get("/sdk-join/{room_name}", response_model=SdkJoinResponse)
+async def sdk_join(
+    room_name: str,
+    db: AsyncSession = Depends(get_db),
+) -> SdkJoinResponse:
+    result = await db.execute(
+        select(Project).where(Project.room_name == room_name)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    return SdkJoinResponse(
+        guest_token=_make_guest_token(project.id),
+        room_name=project.room_name,
+        name=project.name,
+    )
 
 
 # ── Domain allowlist endpoints ────────────────────────────────────────────────

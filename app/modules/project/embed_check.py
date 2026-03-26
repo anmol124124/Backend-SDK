@@ -40,8 +40,11 @@ async def check_embed_domain(token: str, origin: str) -> bool:
     if not raw_project_id:
         return True  # not an embed token, skip domain check
 
-    # Host tokens are used by authenticated project owners — skip domain restriction
-    if payload.get("role") == "host":
+    # Guest tokens are served via public meet (/sdk/join/) — origin is meet.antier.xyz,
+    # not the customer's domain. Skip domain check for guests.
+    # Host tokens ARE subject to domain check — the embed HTML must only work from
+    # whitelisted domains.
+    if payload.get("role") == "guest":
         return True
 
     try:

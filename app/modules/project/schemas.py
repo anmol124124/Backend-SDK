@@ -25,6 +25,12 @@ class EmbedResponse(BaseModel):
     room_name: str
 
 
+class SdkJoinResponse(BaseModel):
+    guest_token: str
+    room_name: str
+    name: str
+
+
 class DomainAddRequest(BaseModel):
     domain: str = Field(min_length=1, max_length=255)
 
