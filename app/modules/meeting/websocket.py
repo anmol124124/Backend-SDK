@@ -123,6 +123,19 @@ def _get_token_type(token: str) -> str | None:
         return decode_token(token).get("type")
     except JWTError:
         return None
+
+
+def _get_token_role(token: str) -> str | None:
+    """Return 'host', 'guest', or None (old tokens without role field)."""
+    try:
+        return decode_public_token(token).get("role")
+    except JWTError:
+        pass
+    try:
+        return decode_token(token).get("role")
+    except JWTError:
+        return None
+
 _ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all"}
 _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
@@ -178,6 +191,21 @@ async def _get_user_from_token(token: str, origin: str | None = None) -> User | 
     if payload.get("type") != "access":
         return None
 
+    # Check domain allowlist for all embed tokens (host and guest)
+    if not await check_embed_domain(token, origin or ""):
+        logger.warning("Domain blocked  origin=%s", origin)
+        return None
+
+    # Guest embed tokens → synthetic user, no DB lookup needed
+    if payload.get("role") == "guest":
+        import types as _types
+        synthetic = _types.SimpleNamespace(
+            id=uuid.uuid4(),   # random per connection so each guest is distinct
+            name="Guest",
+            email="guest@embed.local",
+        )
+        return synthetic
+
     raw_id = payload.get("sub")
     if not raw_id:
         return None
@@ -185,11 +213,6 @@ async def _get_user_from_token(token: str, origin: str | None = None) -> User | 
     try:
         user_id = uuid.UUID(raw_id)
     except ValueError:
-        return None
-
-    # Check domain allowlist for embed tokens
-    if not await check_embed_domain(token, origin or ""):
-        logger.warning("Domain blocked  origin=%s", origin)
         return None
 
     async with AsyncSessionLocal() as db:
@@ -364,9 +387,11 @@ async def signaling_endpoint(
     user_id = base_user_id + "_" + str(uuid.uuid4())[:8]
 
     # ── Step 4: load meeting settings (public meetings only) ──────────────────
-    token_type  = _get_token_type(token)
-    is_guest    = token_type == "public_guest"
-    is_public   = token_type in ("public_guest", "public_host")
+    token_type   = _get_token_type(token)
+    token_role   = _get_token_role(token)
+    is_guest     = token_type == "public_guest" or (token_type == "access" and token_role == "guest")
+    is_embed_host = token_type == "access" and token_role == "host"
+    is_public    = token_type in ("public_guest", "public_host")
 
     meeting_settings: dict = {}
     if is_public:
@@ -569,8 +594,8 @@ async def signaling_endpoint(
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 
-    # Public-host token always reclaims host (handles refresh + reinstatement)
-    if token_type == "public_host":
+    # Public-host and embed-host tokens always reclaim host (handles refresh + reinstatement)
+    if token_type == "public_host" or is_embed_host:
         # First time this meeting has a host — record as permanent host
         if manager.get_permanent_host(room_id) is None:
             manager.set_permanent_host(room_id, user_id)

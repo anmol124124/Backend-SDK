@@ -20,6 +20,7 @@ class ProjectResponse(BaseModel):
 
 class EmbedResponse(BaseModel):
     html: str
+    guest_html: str
     room_name: str
 
 

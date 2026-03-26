@@ -82,7 +82,8 @@ async def get_embed(
 ) -> EmbedResponse:
     project = await ProjectService.get_project(db, project_id, user.id)
     html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
-    return EmbedResponse(html=html, room_name=project.room_name)
+    guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
+    return EmbedResponse(html=html, guest_html=guest_html, room_name=project.room_name)
 
 
 # ── Domain allowlist endpoints ────────────────────────────────────────────────

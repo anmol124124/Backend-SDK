@@ -33,7 +33,24 @@ def _make_embed_token(user_id: UUID, project_id: UUID) -> str:
         "sub": str(user_id),
         "exp": expire,
         "type": "access",
+        "role": "host",
         "jti": str(uuid.uuid4()),
+        "project_id": str(project_id),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def _make_guest_token(project_id: UUID) -> str:
+    """Deterministic guest token for a project — no DB storage needed."""
+    expire = datetime.now(timezone.utc) + timedelta(days=365 * 100)
+    # Use a fixed sub derived from project_id so the token is deterministic.
+    # Each WS connection gets a random suffix from the websocket handler anyway.
+    sub = str(uuid.uuid5(uuid.NAMESPACE_URL, f"guest:{project_id}"))
+    payload = {
+        "sub": sub,
+        "exp": expire,
+        "type": "access",
+        "role": "guest",
         "project_id": str(project_id),
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -140,8 +157,8 @@ class ProjectService:
 
     @staticmethod
     def generate_embed_html(project: Project, backend_url: str) -> str:
+        """Host embed HTML — uses the host token (role: host)."""
         backend_url = backend_url.rstrip("/")
-        ws_url = backend_url.replace("https://", "wss://").replace("http://", "ws://")
         return f"""<!DOCTYPE html>
 <html>
   <head>
@@ -158,6 +175,34 @@ class ProjectService:
         new WebRTCMeetingAPI({{
           roomName:   "{project.room_name}",
           token:      "{project.embed_token}",
+          parentNode: document.querySelector('#meeting-container'),
+        }});
+      }};
+    </script>
+  </body>
+</html>"""
+
+    @staticmethod
+    def generate_guest_html(project: Project, backend_url: str) -> str:
+        """Guest embed HTML — uses the guest token (role: guest), triggers knock-to-join."""
+        backend_url = backend_url.rstrip("/")
+        guest_token = _make_guest_token(project.id)
+        return f"""<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{project.name}</title>
+    <script src="{backend_url}/public/js/app.js?ngrok-skip-browser-warning=true" defer></script>
+    <style>html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}</style>
+  </head>
+  <body>
+    <div id="meeting-container"></div>
+    <script>
+      window.onload = () => {{
+        new WebRTCMeetingAPI({{
+          roomName:   "{project.room_name}",
+          token:      "{guest_token}",
           parentNode: document.querySelector('#meeting-container'),
         }});
       }};
