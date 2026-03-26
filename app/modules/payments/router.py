@@ -56,26 +56,29 @@ async def create_checkout_session(
             detail=f"Unknown plan '{plan}'. Choose from: basic, pro, premium.",
         )
 
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        line_items=[
-            {
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": PLAN_NAMES[plan]},
-                    "unit_amount": PLAN_PRICES[plan],
-                },
-                "quantity": 1,
-            }
-        ],
-        mode="payment",
-        success_url=(
-            f"{settings.DASHBOARD_URL}?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}"
-        ),
-        cancel_url=settings.DASHBOARD_URL,
-        customer_email=current_user.email,
-        metadata={"user_id": str(current_user.id), "plan": plan},
-    )
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {"name": PLAN_NAMES[plan]},
+                        "unit_amount": PLAN_PRICES[plan],
+                    },
+                    "quantity": 1,
+                }
+            ],
+            mode="payment",
+            success_url=(
+                f"{settings.DASHBOARD_URL}?session_id={{CHECKOUT_SESSION_ID}}&plan={plan}"
+            ),
+            cancel_url=settings.DASHBOARD_URL,
+            customer_email=current_user.email,
+            metadata={"user_id": str(current_user.id), "plan": plan},
+        )
+    except stripe.StripeError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     return CheckoutResponse(checkout_url=session.url, session_id=session.id)
 
