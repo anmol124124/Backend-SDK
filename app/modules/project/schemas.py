@@ -21,6 +21,7 @@ class ProjectResponse(BaseModel):
 class EmbedResponse(BaseModel):
     html: str
     guest_html: str
+    host_token: str
     room_name: str
 
 

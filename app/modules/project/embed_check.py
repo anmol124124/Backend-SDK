@@ -40,6 +40,10 @@ async def check_embed_domain(token: str, origin: str) -> bool:
     if not raw_project_id:
         return True  # not an embed token, skip domain check
 
+    # Host tokens are used by authenticated project owners — skip domain restriction
+    if payload.get("role") == "host":
+        return True
+
     try:
         project_id = uuid.UUID(raw_project_id)
     except ValueError:
