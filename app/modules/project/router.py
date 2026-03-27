@@ -209,6 +209,7 @@ async def project_analytics(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import func
     await ProjectService.get_project(db, project_id, user.id)
     result = await db.execute(
         select(ProjectMeeting)
@@ -216,6 +217,16 @@ async def project_analytics(
         .order_by(ProjectMeeting.created_at.desc())
     )
     meetings = result.scalars().all()
+
+    # Fetch participant counts for all meetings in one query
+    room_names = [m.room_name for m in meetings]
+    counts_result = await db.execute(
+        select(ProjectMeetingParticipant.room_name, func.count().label("cnt"))
+        .where(ProjectMeetingParticipant.room_name.in_(room_names))
+        .group_by(ProjectMeetingParticipant.room_name)
+    )
+    participant_counts = {row.room_name: row.cnt for row in counts_result}
+
     return {
         "total": len(meetings),
         "meetings": [
@@ -224,6 +235,9 @@ async def project_analytics(
                 "title": m.title,
                 "room_name": m.room_name,
                 "created_at": m.created_at.isoformat(),
+                "ended_at": m.ended_at.isoformat() if m.ended_at else None,
+                "duration_seconds": int((m.ended_at - m.created_at).total_seconds()) if m.ended_at else None,
+                "participant_count": participant_counts.get(m.room_name, 0),
             }
             for m in meetings
         ],
