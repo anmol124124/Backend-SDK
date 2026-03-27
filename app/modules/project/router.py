@@ -25,7 +25,7 @@ from app.modules.project.schemas import (
 )
 from app.modules.project.service import ProjectService, _make_guest_token
 from app.modules.project.embed_check import check_embed_domain
-from app.modules.project.models import Project, ProjectMeeting
+from app.modules.project.models import Project, ProjectMeeting, ProjectMeetingParticipant
 from sqlalchemy import select
 
 router = APIRouter(prefix="/projects", tags=["Projects"], redirect_slashes=False)
@@ -226,6 +226,68 @@ async def project_analytics(
                 "created_at": m.created_at.isoformat(),
             }
             for m in meetings
+        ],
+    }
+
+
+# ── Meeting detail (participants + duration + admin) ─────────────────────────
+
+@router.get("/{project_id}/meetings/{meeting_id}")
+async def meeting_detail(
+    project_id: UUID,
+    meeting_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify ownership
+    project = await ProjectService.get_project(db, project_id, user.id)
+
+    # Fetch the meeting
+    result = await db.execute(
+        select(ProjectMeeting).where(
+            ProjectMeeting.id == meeting_id,
+            ProjectMeeting.project_id == project_id,
+        )
+    )
+    meeting = result.scalar_one_or_none()
+    if not meeting:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    # Fetch admin (project owner)
+    from app.modules.auth.models import User as UserModel
+    owner_result = await db.execute(select(UserModel).where(UserModel.id == project.owner_id))
+    owner = owner_result.scalar_one_or_none()
+
+    # Fetch participants
+    parts_result = await db.execute(
+        select(ProjectMeetingParticipant)
+        .where(ProjectMeetingParticipant.room_name == meeting.room_name)
+        .order_by(ProjectMeetingParticipant.joined_at)
+    )
+    participants = parts_result.scalars().all()
+
+    # Duration
+    duration_seconds = None
+    if meeting.ended_at and meeting.created_at:
+        duration_seconds = int((meeting.ended_at - meeting.created_at).total_seconds())
+
+    return {
+        "id": str(meeting.id),
+        "title": meeting.title,
+        "room_name": meeting.room_name,
+        "created_at": meeting.created_at.isoformat(),
+        "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
+        "duration_seconds": duration_seconds,
+        "admin": {"email": owner.email if owner else "Unknown"},
+        "participants": [
+            {
+                "display_name": p.display_name,
+                "role": p.role,
+                "joined_at": p.joined_at.isoformat(),
+                "left_at": p.left_at.isoformat() if p.left_at else None,
+            }
+            for p in participants
         ],
     }
 
