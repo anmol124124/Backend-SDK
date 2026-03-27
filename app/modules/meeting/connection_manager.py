@@ -111,6 +111,11 @@ class ConnectionManager:
         """Return True if this guest was previously admitted to the room."""
         return base_user_id in self._admitted_guests.get(meeting_id, set())
 
+    def remove_admitted(self, meeting_id: str, base_user_id: str) -> None:
+        """Revoke admission (e.g. after kick) so guest must be re-approved next time."""
+        self._admitted_guests.get(meeting_id, set()).discard(base_user_id)
+        logger.info("Guest admission revoked  meeting=%s  base_user=%s", meeting_id, base_user_id)
+
     def disconnect(self, meeting_id: str, user_id: str) -> None:
         room = self._rooms.get(meeting_id, {})
         room.pop(user_id, None)

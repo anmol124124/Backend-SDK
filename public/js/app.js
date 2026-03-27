@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", parentNode, onLeave = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -75,7 +75,7 @@ class WebRTCMeetingAPI {
     // Misc
     this._isLeaving     = false;
     this._uiBuilt       = false;
-    this._isReconnecting = false;
+    this._isReconnecting = reconnect;
     this._meetingStart   = null;
     this._settings       = {}; // meeting permissions from server
 
@@ -141,9 +141,31 @@ class WebRTCMeetingAPI {
   }
 
   _showEmbedPrescreen() {
-    const self = this;
     const SESSION_KEY = 'wrtc_active_meeting_' + this._embedToken.slice(-8);
 
+    // Override _onLeave before any early returns so all leave paths (normal, end-meeting,
+    // transfer+leave, refresh+leave) always clear the session key and return to prescreen.
+    const externalOnLeave = this._onLeave;
+    this._onLeave = () => {
+      sessionStorage.removeItem(SESSION_KEY);
+      if (typeof externalOnLeave === 'function') externalOnLeave();
+      else window.location.reload();
+    };
+
+    // Show a loading screen while the domain whitelist check runs asynchronously.
+    this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#202124;';
+    this.parentNode.innerHTML = '<div style="width:32px;height:32px;border:3px solid rgba(255,255,255,.1);border-top-color:#1a73e8;border-radius:50%;animation:wrtc-spin .8s linear infinite"></div><style>@keyframes wrtc-spin{to{transform:rotate(360deg)}}</style>';
+
+    // Domain whitelist check — verify the embed token is allowed on this origin before
+    // rendering anything. The browser automatically sends the correct Origin header.
+    const _self = this;
+    fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this._embedToken))
+      .then(res => { if (!res.ok) { _self._showAccessDenied(); } else { _self._renderEmbedPrescreen(SESSION_KEY); } })
+      .catch(() => _self._showAccessDenied());
+  }
+
+  _renderEmbedPrescreen(SESSION_KEY) {
+    const self = this;
     this.parentNode.style.cssText = 'position:fixed;inset:0';
     this.parentNode.innerHTML = `<style>
       .ep*{box-sizing:border-box;margin:0;padding:0}
@@ -182,7 +204,13 @@ class WebRTCMeetingAPI {
       self.token       = hostToken;
       self._shareUrl   = shareUrl;
       self._embedToken = '';  // prevent _init() from looping back to prescreen
-      self._buildLobby();
+      // If the admin was already in this meeting (name saved), skip lobby and reconnect directly
+      const savedName = sessionStorage.getItem('wrtc_name_' + roomName);
+      if (savedName) {
+        self._showReconnecting(savedName);
+      } else {
+        self._buildLobby();
+      }
     }
 
     // Auto-rejoin on refresh
@@ -227,8 +255,6 @@ class WebRTCMeetingAPI {
     };
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
 
-    // Set onLeave to clear session and reload prescreen
-    this._onLeave = () => { sessionStorage.removeItem(SESSION_KEY); window.location.reload(); };
   }
 
   _showRoleSelection() {
@@ -332,7 +358,7 @@ class WebRTCMeetingAPI {
   }
 
   _showAccessDenied() {
-    this.parentNode.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;background:#202124;';
+    this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#202124;z-index:99999;';
     this.parentNode.innerHTML =
       '<div style="text-align:center;padding:40px;background:#2d2e31;border:1px solid #3c3f45;border-radius:16px;max-width:380px;font-family:sans-serif">' +
         '<div style="font-size:48px;margin-bottom:16px">\uD83D\uDEAB</div>' +

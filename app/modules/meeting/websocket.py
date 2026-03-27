@@ -196,11 +196,19 @@ async def _get_user_from_token(token: str, origin: str | None = None) -> User | 
         logger.warning("Domain blocked  origin=%s", origin)
         return None
 
-    # Guest embed tokens → synthetic user, no DB lookup needed
+    # Guest embed tokens → synthetic user, no DB lookup needed.
+    # Use the token's own sub (a unique UUID4 per token) as the stable ID
+    # so the same guest token reconnecting after a refresh maps to the same
+    # base_user_id — enabling the was_admitted bypass without re-approval.
     if payload.get("role") == "guest":
         import types as _types
+        raw_sub = payload.get("sub", "")
+        try:
+            guest_id = uuid.UUID(raw_sub)
+        except ValueError:
+            guest_id = uuid.uuid4()
         synthetic = _types.SimpleNamespace(
-            id=uuid.uuid4(),   # random per connection so each guest is distinct
+            id=guest_id,
             name="Guest",
             email="guest@embed.local",
         )
@@ -760,6 +768,10 @@ async def signaling_endpoint(
                             room_id, target_id,
                             {"type": "you-were-kicked", "from": "server", "payload": {}},
                         )
+                        # Revoke admission so kicked guest needs re-approval on next join.
+                        # user_id format: "<base_uuid>_<8chars>" — strip the suffix.
+                        kicked_base = target_id.rsplit("_", 1)[0]
+                        manager.remove_admitted(room_id, kicked_base)
                         logger.info("Kick  room=%s  target=%s  by_host=%s", room_id, target_id, user_id)
                 continue
 

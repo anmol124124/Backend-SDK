@@ -41,11 +41,12 @@ def _make_embed_token(user_id: UUID, project_id: UUID) -> str:
 
 
 def _make_guest_token(project_id: UUID) -> str:
-    """Deterministic guest token for a project — no DB storage needed."""
+    """Unique guest token per session — sub is a fresh UUID4 each call.
+    Stored in the guest's sessionStorage so the same token is reused on refresh,
+    giving the guest a stable identity for reconnect-bypass logic.
+    """
     expire = datetime.now(timezone.utc) + timedelta(days=365 * 100)
-    # Use a fixed sub derived from project_id so the token is deterministic.
-    # Each WS connection gets a random suffix from the websocket handler anyway.
-    sub = str(uuid.uuid5(uuid.NAMESPACE_URL, f"guest:{project_id}"))
+    sub = str(uuid.uuid4())   # unique per guest session
     payload = {
         "sub": sub,
         "exp": expire,
@@ -193,10 +194,14 @@ class ProjectService:
     <div id="meeting-container"></div>
     <script>
       window.onload = function() {{
-        new WebRTCMeetingAPI({{
-          embedToken: "{project.embed_token}",
-          parentNode: document.getElementById('meeting-container'),
-        }});
+        function launchApp() {{
+          new WebRTCMeetingAPI({{
+            embedToken: "{project.embed_token}",
+            parentNode: document.getElementById('meeting-container'),
+            onLeave: launchApp,
+          }});
+        }}
+        launchApp();
       }};
     </script>
   </body>
