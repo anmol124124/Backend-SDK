@@ -92,6 +92,35 @@ async def get_embed(
     return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
 
 
+# ── Project analytics (authenticated) ────────────────────────────────────────
+
+@router.get("/{project_id}/analytics")
+async def project_analytics(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await ProjectService.get_project(db, project_id, user.id)
+    result = await db.execute(
+        select(ProjectMeeting)
+        .where(ProjectMeeting.project_id == project_id)
+        .order_by(ProjectMeeting.created_at.desc())
+    )
+    meetings = result.scalars().all()
+    return {
+        "total": len(meetings),
+        "meetings": [
+            {
+                "id": str(m.id),
+                "title": m.title,
+                "room_name": m.room_name,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in meetings
+        ],
+    }
+
+
 # ── Public: list meetings for embed HTML (uses embed token) ──────────────────
 
 @router.get("/my-meetings", response_model=list[ProjectMeetingResponse])
