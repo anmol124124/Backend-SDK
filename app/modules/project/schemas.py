@@ -31,6 +31,18 @@ class SdkJoinResponse(BaseModel):
     name: str
 
 
+class CreateMeetingRequest(BaseModel):
+    embed_token: str
+    title: str = Field(min_length=1, max_length=255)
+
+
+class CreateMeetingResponse(BaseModel):
+    room_name: str
+    host_token: str
+    share_url: str
+    title: str
+
+
 class DomainAddRequest(BaseModel):
     domain: str = Field(min_length=1, max_length=255)
 

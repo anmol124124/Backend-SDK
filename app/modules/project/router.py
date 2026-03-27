@@ -13,6 +13,8 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.modules.auth.models import User
 from app.modules.project.schemas import (
+    CreateMeetingRequest,
+    CreateMeetingResponse,
     DomainAddRequest,
     DomainResponse,
     EmbedResponse,
@@ -22,7 +24,7 @@ from app.modules.project.schemas import (
 )
 from app.modules.project.service import ProjectService, _make_guest_token
 from app.modules.project.embed_check import check_embed_domain
-from app.modules.project.models import Project
+from app.modules.project.models import Project, ProjectMeeting
 from sqlalchemy import select
 
 router = APIRouter(prefix="/projects", tags=["Projects"], redirect_slashes=False)
@@ -89,6 +91,39 @@ async def get_embed(
     return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
 
 
+# ── Public: create meeting from embed HTML (no auth header — uses embed token) ─
+
+@router.post("/create-meeting", response_model=CreateMeetingResponse)
+async def create_meeting_from_embed(
+    payload: CreateMeetingRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CreateMeetingResponse:
+    from jose import JWTError, jwt as jose_jwt
+    from app.core.config import settings as _settings
+    try:
+        token_payload = jose_jwt.decode(
+            payload.embed_token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM]
+        )
+    except JWTError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid embed token")
+    raw_project_id = token_payload.get("project_id")
+    if not raw_project_id or token_payload.get("role") != "host":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Not a host token")
+    import uuid as _uuid
+    project_id = _uuid.UUID(raw_project_id)
+    meeting = await ProjectService.create_project_meeting(db, project_id, payload.title)
+    public_meet_url = _settings.PUBLIC_MEET_URL.rstrip("/")
+    share_url = f"{public_meet_url}/sdk/join/{meeting.room_name}"
+    return CreateMeetingResponse(
+        room_name=meeting.room_name,
+        host_token=meeting.host_token,
+        share_url=share_url,
+        title=meeting.title,
+    )
+
+
 # ── Public SDK join endpoint (no auth — for guests via public meet) ───────────
 
 @router.get("/sdk-join/{room_name}", response_model=SdkJoinResponse)
@@ -96,6 +131,18 @@ async def sdk_join(
     room_name: str,
     db: AsyncSession = Depends(get_db),
 ) -> SdkJoinResponse:
+    # Check project_meetings first (meetings created from embed HTML)
+    pm_result = await db.execute(
+        select(ProjectMeeting).where(ProjectMeeting.room_name == room_name)
+    )
+    pm = pm_result.scalar_one_or_none()
+    if pm:
+        return SdkJoinResponse(
+            guest_token=_make_guest_token(pm.project_id),
+            room_name=pm.room_name,
+            name=pm.title,
+        )
+    # Fall back to project room_name (legacy)
     result = await db.execute(
         select(Project).where(Project.room_name == room_name)
     )

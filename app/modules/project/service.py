@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.dynamic_cors import invalidate_cors_cache
-from app.modules.project.models import Project, ProjectDomain
+from app.modules.project.models import Project, ProjectDomain, ProjectMeeting
 from app.modules.project.schemas import DomainAddRequest, ProjectCreateRequest
 
 
@@ -156,6 +156,28 @@ class ProjectService:
         invalidate_cors_cache()
 
     @staticmethod
+    async def create_project_meeting(
+        db: AsyncSession, project_id: UUID, title: str
+    ) -> ProjectMeeting:
+        room_name = _make_room_name(title)
+        # host_token for this meeting uses project owner's id from the project
+        result = await db.execute(select(Project).where(Project.id == project_id))
+        project = result.scalar_one_or_none()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        host_token = _make_embed_token(project.owner_id, project_id)
+        meeting = ProjectMeeting(
+            project_id=project_id,
+            title=title,
+            room_name=room_name,
+            host_token=host_token,
+        )
+        db.add(meeting)
+        await db.flush()
+        await db.refresh(meeting)
+        return meeting
+
+    @staticmethod
     def generate_embed_html(project: Project, backend_url: str) -> str:
         """
         Combined embed HTML — embeds both host and guest tokens.
@@ -164,48 +186,40 @@ class ProjectService:
         """
         backend_url = backend_url.rstrip("/")
         public_meet_url = settings.PUBLIC_MEET_URL.rstrip("/")
-        share_url = f"{public_meet_url}/sdk/join/{project.room_name}"
         return f"""<!DOCTYPE html>
 <html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{project.name}</title>
-    <script src="{backend_url}/public/js/app.js?ngrok-skip-browser-warning=true" defer></script>
+    <script src="{backend_url}/public/js/app.js?ngrok-skip-browser-warning=true" async></script>
     <style>
       html, body, #meeting-container {{ height: 100%; margin: 0; padding: 0; }}
       #wrtc-pre {{
         position: fixed; inset: 0;
         background: linear-gradient(160deg, #1a1c22, #202124);
         display: flex; flex-direction: column;
-        align-items: center; justify-content: center; gap: 24px;
+        align-items: center; justify-content: center; gap: 20px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }}
       #wrtc-pre h2 {{ color: #e8eaed; font-size: 24px; font-weight: 700; margin: 0; }}
       #wrtc-pre p {{ color: #9aa0a6; font-size: 14px; margin: 0; }}
+      #wrtc-title-input {{
+        background: rgba(255,255,255,.07); border: 1.5px solid rgba(255,255,255,.15);
+        border-radius: 10px; padding: 13px 16px; color: #e8eaed; font-size: 15px;
+        width: 320px; outline: none; box-sizing: border-box;
+      }}
+      #wrtc-title-input::placeholder {{ color: #5f6368; }}
       #wrtc-create-btn {{
         background: linear-gradient(90deg, #1a73e8, #4d94ff);
         color: #fff; border: none; border-radius: 12px;
         padding: 14px 36px; font-size: 16px; font-weight: 600;
         cursor: pointer; box-shadow: 0 4px 16px rgba(26,115,232,.4);
-        transition: transform .15s, box-shadow .15s;
+        transition: transform .15s, box-shadow .15s; width: 320px;
       }}
-      #wrtc-create-btn:hover {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,115,232,.5); }}
-      #wrtc-share-bar {{
-        display: none; flex-direction: column; align-items: center; gap: 8px;
-        background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
-        border-radius: 12px; padding: 16px 24px; max-width: 480px; width: 90%;
-      }}
-      #wrtc-share-bar span {{ color: #9aa0a6; font-size: 13px; }}
-      #wrtc-share-url {{
-        color: #4d94ff; font-size: 13px; font-family: monospace;
-        word-break: break-all; text-align: center;
-      }}
-      #wrtc-copy-btn {{
-        background: rgba(26,115,232,.15); color: #4d94ff;
-        border: 1px solid rgba(26,115,232,.3); border-radius: 8px;
-        padding: 6px 18px; font-size: 13px; cursor: pointer;
-      }}
+      #wrtc-create-btn:disabled {{ opacity: 0.5; cursor: not-allowed; transform: none; }}
+      #wrtc-create-btn:hover:not(:disabled) {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,115,232,.5); }}
+      #wrtc-err {{ color: #ea4335; font-size: 13px; display: none; }}
     </style>
   </head>
   <body>
@@ -213,35 +227,56 @@ class ProjectService:
     <div id="wrtc-pre">
       <div style="text-align:center">
         <h2>{project.name}</h2>
-        <p>Start the meeting and share the link with participants</p>
+        <p>Enter a title and start your meeting</p>
       </div>
-      <div id="wrtc-share-bar">
-        <span>Share this link with guests:</span>
-        <div id="wrtc-share-url">{share_url}</div>
-        <button id="wrtc-copy-btn" onclick="navigator.clipboard.writeText('{share_url}').then(function(){{document.getElementById('wrtc-copy-btn').textContent='Copied!';setTimeout(function(){{document.getElementById('wrtc-copy-btn').textContent='Copy Link'}},2000)}})">Copy Link</button>
-      </div>
+      <input id="wrtc-title-input" type="text" placeholder="Meeting title (e.g. Weekly Standup)" maxlength="255" />
+      <div id="wrtc-err"></div>
       <button id="wrtc-create-btn">Create Meeting</button>
     </div>
     <script>
-      document.getElementById('wrtc-create-btn').onclick = function() {{
-        document.getElementById('wrtc-pre').style.display = 'none';
-        document.getElementById('meeting-container').style.position = 'fixed';
-        document.getElementById('meeting-container').style.inset = '0';
-        new WebRTCMeetingAPI({{
-          roomName:   "{project.room_name}",
-          token:      "{project.embed_token}",
-          shareUrl:   "{share_url}",
-          parentNode: document.querySelector('#meeting-container'),
-        }});
-        var bar = document.getElementById('wrtc-share-bar');
-        bar.style.display = 'flex';
-        bar.style.position = 'fixed';
-        bar.style.bottom = '16px';
-        bar.style.left = '50%';
-        bar.style.transform = 'translateX(-50%)';
-        bar.style.zIndex = '9999';
-        bar.style.background = 'rgba(32,33,36,.95)';
-        bar.style.backdropFilter = 'blur(8px)';
+      window.onload = function() {{
+        var BACKEND = '{backend_url}';
+        var PUBLIC_MEET = '{public_meet_url}';
+        var EMBED_TOKEN = '{project.embed_token}';
+        var PROJECT_ID = '{project.id}';
+
+        var btn = document.getElementById('wrtc-create-btn');
+        var inp = document.getElementById('wrtc-title-input');
+        var err = document.getElementById('wrtc-err');
+
+        btn.onclick = function() {{
+          var title = inp.value.trim();
+          if (!title) {{ inp.focus(); return; }}
+          btn.disabled = true;
+          btn.textContent = 'Creating…';
+          err.style.display = 'none';
+
+          fetch(BACKEND + '/api/v1/projects/create-meeting', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{embed_token: EMBED_TOKEN, title: title}})
+          }})
+          .then(function(r) {{ return r.ok ? r.json() : r.json().then(function(e) {{ throw new Error(e.detail || 'Failed'); }}); }})
+          .then(function(data) {{
+            document.getElementById('wrtc-pre').style.display = 'none';
+            document.getElementById('meeting-container').style.position = 'fixed';
+            document.getElementById('meeting-container').style.inset = '0';
+            new WebRTCMeetingAPI({{
+              roomName:   data.room_name,
+              token:      data.host_token,
+              shareUrl:   data.share_url,
+              parentNode: document.querySelector('#meeting-container'),
+            }});
+          }})
+          .catch(function(e) {{
+            err.textContent = e.message;
+            err.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Create Meeting';
+          }});
+        }};
+
+        inp.addEventListener('keydown', function(e) {{ if (e.key === 'Enter') btn.click(); }});
       }};
     </script>
   </body>

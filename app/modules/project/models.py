@@ -22,6 +22,23 @@ class Project(Base):
     )
 
 
+class ProjectMeeting(Base):
+    __tablename__ = "project_meetings"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    room_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    host_token: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
 class ProjectDomain(Base):
     __tablename__ = "project_domains"
 
