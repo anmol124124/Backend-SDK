@@ -19,6 +19,7 @@ from app.modules.project.schemas import (
     DomainResponse,
     EmbedResponse,
     ProjectCreateRequest,
+    ProjectMeetingResponse,
     ProjectResponse,
     SdkJoinResponse,
 )
@@ -89,6 +90,49 @@ async def get_embed(
     html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
     guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
     return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
+
+
+# ── Public: list meetings for embed HTML (uses embed token) ──────────────────
+
+@router.get("/my-meetings", response_model=list[ProjectMeetingResponse])
+async def my_meetings(
+    embed_token: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[ProjectMeetingResponse]:
+    from jose import JWTError, jwt as jose_jwt
+    from app.core.config import settings as _settings
+    import uuid as _uuid
+    try:
+        token_payload = jose_jwt.decode(
+            embed_token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM]
+        )
+    except JWTError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid embed token")
+    raw_project_id = token_payload.get("project_id")
+    if not raw_project_id or token_payload.get("role") != "host":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Not a host token")
+    project_id = _uuid.UUID(raw_project_id)
+    public_meet_url = _settings.PUBLIC_MEET_URL.rstrip("/")
+    result = await db.execute(
+        select(ProjectMeeting)
+        .where(ProjectMeeting.project_id == project_id)
+        .order_by(ProjectMeeting.created_at.desc())
+    )
+    meetings = result.scalars().all()
+    return [
+        ProjectMeetingResponse(
+            id=m.id,
+            project_id=m.project_id,
+            title=m.title,
+            room_name=m.room_name,
+            host_token=m.host_token,
+            share_url=f"{public_meet_url}/sdk/join/{m.room_name}",
+            created_at=m.created_at,
+        )
+        for m in meetings
+    ]
 
 
 # ── Public: create meeting from embed HTML (no auth header — uses embed token) ─

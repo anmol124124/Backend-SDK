@@ -31,6 +31,18 @@ class SdkJoinResponse(BaseModel):
     name: str
 
 
+class ProjectMeetingResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    room_name: str
+    host_token: str
+    share_url: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CreateMeetingRequest(BaseModel):
     embed_token: str
     title: str = Field(min_length=1, max_length=255)
