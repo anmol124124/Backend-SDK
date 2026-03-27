@@ -910,6 +910,10 @@ async def signaling_endpoint(
 
         manager.disconnect(room_id, user_id)
 
+        # If the room is now empty, the meeting is effectively over — record end time.
+        if _is_pm and manager.room_size(room_id) == 0:
+            asyncio.create_task(_record_meeting_end(room_id))
+
         # Remove peer from mediasoup (closes transports, producers, consumers)
         try:
             await sfu.remove_peer(room_id, user_id)
