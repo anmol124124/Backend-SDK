@@ -62,65 +62,6 @@ async def embed_check(token: str, request: Request) -> JSONResponse:
     return JSONResponse({"allowed": False}, status_code=403)
 
 
-@router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(
-    project_id: UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> ProjectResponse:
-    return await ProjectService.get_project(db, project_id, user.id)
-
-
-@router.delete("/{project_id}", status_code=204)
-async def delete_project(
-    project_id: UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> None:
-    await ProjectService.delete_project(db, project_id, user.id)
-
-
-@router.get("/{project_id}/embed", response_model=EmbedResponse)
-async def get_embed(
-    project_id: UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> EmbedResponse:
-    project = await ProjectService.get_project(db, project_id, user.id)
-    html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
-    guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
-    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
-
-
-# ── Project analytics (authenticated) ────────────────────────────────────────
-
-@router.get("/{project_id}/analytics")
-async def project_analytics(
-    project_id: UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    await ProjectService.get_project(db, project_id, user.id)
-    result = await db.execute(
-        select(ProjectMeeting)
-        .where(ProjectMeeting.project_id == project_id)
-        .order_by(ProjectMeeting.created_at.desc())
-    )
-    meetings = result.scalars().all()
-    return {
-        "total": len(meetings),
-        "meetings": [
-            {
-                "id": str(m.id),
-                "title": m.title,
-                "room_name": m.room_name,
-                "created_at": m.created_at.isoformat(),
-            }
-            for m in meetings
-        ],
-    }
-
-
 # ── Public: list meetings for embed HTML (uses embed token) ──────────────────
 
 @router.get("/my-meetings", response_model=list[ProjectMeetingResponse])
@@ -228,6 +169,65 @@ async def sdk_join(
         room_name=project.room_name,
         name=project.name,
     )
+
+
+@router.get("/{project_id}", response_model=ProjectResponse)
+async def get_project(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectResponse:
+    return await ProjectService.get_project(db, project_id, user.id)
+
+
+@router.delete("/{project_id}", status_code=204)
+async def delete_project(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await ProjectService.delete_project(db, project_id, user.id)
+
+
+@router.get("/{project_id}/embed", response_model=EmbedResponse)
+async def get_embed(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> EmbedResponse:
+    project = await ProjectService.get_project(db, project_id, user.id)
+    html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
+    guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
+    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
+
+
+# ── Project analytics (authenticated) ────────────────────────────────────────
+
+@router.get("/{project_id}/analytics")
+async def project_analytics(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await ProjectService.get_project(db, project_id, user.id)
+    result = await db.execute(
+        select(ProjectMeeting)
+        .where(ProjectMeeting.project_id == project_id)
+        .order_by(ProjectMeeting.created_at.desc())
+    )
+    meetings = result.scalars().all()
+    return {
+        "total": len(meetings),
+        "meetings": [
+            {
+                "id": str(m.id),
+                "title": m.title,
+                "room_name": m.room_name,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in meetings
+        ],
+    }
 
 
 # ── Domain allowlist endpoints ────────────────────────────────────────────────

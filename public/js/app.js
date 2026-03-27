@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", parentNode, onLeave = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", parentNode, onLeave = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -27,6 +27,7 @@ class WebRTCMeetingAPI {
     this._hostToken  = hostToken;
     this._guestToken = guestToken;
     this._shareUrl   = shareUrl;
+    this._embedToken = embedToken;
     this.parentNode  = parentNode;
     this._onLeave    = onLeave;
 
@@ -107,6 +108,12 @@ class WebRTCMeetingAPI {
   }
 
   _init() {
+    // Embed pre-screen mode — embedToken provided, no room yet
+    if (this._embedToken) {
+      this._showEmbedPrescreen();
+      return;
+    }
+
     // If both hostToken and guestToken are provided → show role selection first
     if (this._hostToken && this._guestToken) {
       this._showRoleSelection();
@@ -131,6 +138,97 @@ class WebRTCMeetingAPI {
         if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
       })
       .catch((err) => { console.error('[WRTC] embed-check FAILED (catch):', err); this._showAccessDenied(); });
+  }
+
+  _showEmbedPrescreen() {
+    const self = this;
+    const SESSION_KEY = 'wrtc_active_meeting_' + this._embedToken.slice(-8);
+
+    this.parentNode.style.cssText = 'position:fixed;inset:0';
+    this.parentNode.innerHTML = `<style>
+      .ep*{box-sizing:border-box;margin:0;padding:0}
+      .ep{position:fixed;inset:0;background:#1a1c22;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8eaed;display:flex;flex-direction:column;align-items:center;padding:40px 16px;overflow-y:auto}
+      .ep-hdr{text-align:center;margin-bottom:32px}.ep-hdr h2{font-size:26px;font-weight:700}.ep-hdr p{color:#9aa0a6;font-size:14px;margin-top:6px}
+      .ep-card{background:#25262b;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:24px;width:100%;max-width:560px;margin-bottom:16px}
+      .ep-card h3{font-size:12px;font-weight:600;color:#9aa0a6;text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px}
+      .ep-input{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;color:#e8eaed;font-size:15px;width:100%;outline:none}
+      .ep-input:focus{border-color:#1a73e8}.ep-input::placeholder{color:#5f6368}
+      .ep-btn{background:linear-gradient(90deg,#1a73e8,#4d94ff);color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;width:100%;margin-top:12px;transition:opacity .15s}
+      .ep-btn:disabled{opacity:.5;cursor:not-allowed}
+      .ep-err{color:#ea4335;font-size:13px;margin-top:8px;display:none}
+      .ep-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+      .ep-row:last-child{border-bottom:none}
+      .ep-row-title{font-size:15px;font-weight:500}.ep-row-date{font-size:12px;color:#9aa0a6;margin-top:2px}
+      .ep-join{background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+      .ep-empty{color:#9aa0a6;font-size:14px;text-align:center;padding:8px 0}
+      .ep-spin{width:28px;height:28px;border:3px solid rgba(255,255,255,.1);border-top-color:#1a73e8;border-radius:50%;animation:ep-s .8s linear infinite;margin:8px auto}
+      @keyframes ep-s{to{transform:rotate(360deg)}}
+    </style>
+    <div class="ep">
+      <div class="ep-hdr"><h2 id="ep-title">Meeting Room</h2><p>Create a new meeting or join a previous one</p></div>
+      <div class="ep-card"><h3>New Meeting</h3>
+        <input id="ep-inp" class="ep-input" type="text" placeholder="Enter meeting title…" maxlength="255"/>
+        <div id="ep-err" class="ep-err"></div>
+        <button id="ep-create" class="ep-btn">Create &amp; Start</button>
+      </div>
+      <div class="ep-card"><h3>Previous Meetings</h3><div id="ep-list"><div class="ep-spin"></div></div></div>
+    </div>`;
+
+    function startMeeting(roomName, hostToken, shareUrl) {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({roomName, hostToken, shareUrl}));
+      self.parentNode.innerHTML = '';
+      self.parentNode.style.cssText = 'position:fixed;inset:0';
+      self.roomName    = roomName;
+      self.token       = hostToken;
+      self._shareUrl   = shareUrl;
+      self._embedToken = '';  // prevent _init() from looping back to prescreen
+      self._buildLobby();
+    }
+
+    // Auto-rejoin on refresh
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (saved) {
+      try { const s = JSON.parse(saved); startMeeting(s.roomName, s.hostToken, s.shareUrl); return; }
+      catch(_) { sessionStorage.removeItem(SESSION_KEY); }
+    }
+
+    // Load past meetings
+    fetch(this._httpBase + '/api/v1/projects/my-meetings?embed_token=' + encodeURIComponent(this._embedToken))
+      .then(r => r.json())
+      .then(list => {
+        const el = document.getElementById('ep-list');
+        if (!list || !list.length) { el.innerHTML = '<p class="ep-empty">No meetings yet.</p>'; return; }
+        el.innerHTML = list.map(m => `<div class="ep-row">
+          <div><div class="ep-row-title">${m.title}</div>
+          <div class="ep-row-date">${new Date(m.created_at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div></div>
+          <button class="ep-join" data-room="${m.room_name}" data-token="${m.host_token}" data-share="${m.share_url}">Join</button>
+        </div>`).join('');
+        el.querySelectorAll('.ep-join').forEach(btn => {
+          btn.addEventListener('click', function() { startMeeting(this.dataset.room, this.dataset.token, this.dataset.share); });
+        });
+      })
+      .catch(() => { const el = document.getElementById('ep-list'); if(el) el.innerHTML = '<p class="ep-empty">Could not load meetings.</p>'; });
+
+    // Create new meeting
+    const createBtn = document.getElementById('ep-create');
+    const inp = document.getElementById('ep-inp');
+    const errEl = document.getElementById('ep-err');
+    createBtn.onclick = () => {
+      const title = inp.value.trim();
+      if (!title) { inp.focus(); return; }
+      createBtn.disabled = true; createBtn.textContent = 'Creating…'; errEl.style.display = 'none';
+      fetch(this._httpBase + '/api/v1/projects/create-meeting', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({embed_token: this._embedToken, title})
+      })
+      .then(r => r.ok ? r.json() : r.json().then(e => { throw new Error(e.detail||'Failed'); }))
+      .then(data => startMeeting(data.room_name, data.host_token, data.share_url))
+      .catch(e => { errEl.textContent = e.message; errEl.style.display = 'block'; createBtn.disabled = false; createBtn.textContent = 'Create & Start'; });
+    };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
+
+    // Set onLeave to clear session and reload prescreen
+    this._onLeave = () => { sessionStorage.removeItem(SESSION_KEY); window.location.reload(); };
   }
 
   _showRoleSelection() {
