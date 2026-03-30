@@ -153,8 +153,8 @@ class WebRTCMeetingAPI {
     };
 
     // Show a loading screen while the domain whitelist check runs asynchronously.
-    this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#202124;';
-    this.parentNode.innerHTML = '<div style="width:32px;height:32px;border:3px solid rgba(255,255,255,.1);border-top-color:#1a73e8;border-radius:50%;animation:wrtc-spin .8s linear infinite"></div><style>@keyframes wrtc-spin{to{transform:rotate(360deg)}}</style>';
+    this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#13151c 0%,#1a1d26 100%);';
+    this.parentNode.innerHTML = '<div style="width:36px;height:36px;border:3px solid rgba(255,255,255,.08);border-top-color:#4d94ff;border-radius:50%;animation:wrtc-spin .8s linear infinite"></div><style>@keyframes wrtc-spin{to{transform:rotate(360deg)}}</style>';
 
     // Domain whitelist check — verify the embed token is allowed on this origin before
     // rendering anything. The browser automatically sends the correct Origin header.
@@ -169,13 +169,13 @@ class WebRTCMeetingAPI {
     this.parentNode.style.cssText = 'position:fixed;inset:0';
     this.parentNode.innerHTML = `<style>
       .ep*{box-sizing:border-box;margin:0;padding:0}
-      .ep{position:fixed;inset:0;background:#1a1c22;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8eaed;display:flex;flex-direction:column;align-items:center;padding:40px 16px;overflow-y:auto}
+      .ep{position:fixed;inset:0;background:linear-gradient(135deg,#13151c 0%,#1a1d26 60%,#1c1f2e 100%);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8eaed;display:flex;flex-direction:column;align-items:center;padding:40px 16px;overflow-y:auto}
       .ep-hdr{text-align:center;margin-bottom:32px}.ep-hdr h2{font-size:26px;font-weight:700}.ep-hdr p{color:#9aa0a6;font-size:14px;margin-top:6px}
-      .ep-card{background:#25262b;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:24px;width:100%;max-width:560px;margin-bottom:16px}
+      .ep-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:20px;padding:24px;width:100%;max-width:560px;margin-bottom:16px;box-shadow:0 8px 32px rgba(0,0,0,.3)}
       .ep-card h3{font-size:12px;font-weight:600;color:#9aa0a6;text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px}
       .ep-input{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:12px 14px;color:#e8eaed;font-size:15px;width:100%;outline:none}
       .ep-input:focus{border-color:#1a73e8}.ep-input::placeholder{color:#5f6368}
-      .ep-btn{background:linear-gradient(90deg,#1a73e8,#4d94ff);color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;width:100%;margin-top:12px;transition:opacity .15s}
+      .ep-btn{background:linear-gradient(135deg,#1a73e8,#4d94ff);color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;width:100%;margin-top:12px;transition:opacity .15s;box-shadow:0 4px 20px rgba(26,115,232,.4)}
       .ep-btn:disabled{opacity:.5;cursor:not-allowed}
       .ep-err{color:#ea4335;font-size:13px;margin-top:8px;display:none}
       .ep-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.06)}
@@ -203,6 +203,7 @@ class WebRTCMeetingAPI {
       self.roomName    = roomName;
       self.token       = hostToken;
       self._shareUrl   = shareUrl;
+      self._embedTokenSaved = self._embedToken; // save for recording upload
       self._embedToken = '';  // prevent _init() from looping back to prescreen
       // If the admin was already in this meeting (name saved), skip lobby and reconnect directly
       const savedName = sessionStorage.getItem('wrtc_name_' + roomName);
@@ -326,12 +327,15 @@ class WebRTCMeetingAPI {
     this._isReconnecting = true;   // tells WS to pass reconnect=1 → backend skips knock
     this.parentNode.innerHTML =
       '<style>@keyframes wrtc-spin{to{transform:rotate(360deg)}}</style>' +
-      '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-      'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;">' +
-      '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.1);' +
-      'border-top:4px solid #1a73e8;border-radius:50%;animation:wrtc-spin 1s linear infinite;"></div>' +
-      '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Reconnecting…</p>' +
-      '<p style="color:rgba(255,255,255,.45);font-size:13px;margin:0;">Please wait</p>' +
+      '<div style="position:fixed;inset:0;background:linear-gradient(135deg,#13151c 0%,#1a1d26 100%);display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">' +
+      '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:48px 56px;display:flex;flex-direction:column;align-items:center;gap:20px;box-shadow:0 24px 64px rgba(0,0,0,.5);">' +
+      '<div style="width:52px;height:52px;border:3px solid rgba(255,255,255,.08);' +
+      'border-top-color:#4d94ff;border-radius:50%;animation:wrtc-spin .9s linear infinite;"></div>' +
+      '<div style="text-align:center;">' +
+      '<p style="color:#e8eaed;font-size:17px;font-weight:600;margin:0 0 6px;">Reconnecting…</p>' +
+      '<p style="color:rgba(255,255,255,.4);font-size:13px;margin:0;">Please wait</p>' +
+      '</div></div>' +
       '</div>';
     // Get camera, then connect — do NOT call _joinMeeting (it would overwrite this screen)
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
@@ -377,14 +381,15 @@ class WebRTCMeetingAPI {
       .wrtc-lobby*{box-sizing:border-box;margin:0;padding:0}
       .wrtc-lobby{
         font-family:'Google Sans',Roboto,-apple-system,sans-serif;
-        background:#202124;color:#e8eaed;
+        background:linear-gradient(135deg,#13151c 0%,#1a1d26 60%,#1c1f2e 100%);color:#e8eaed;
         height:100%;display:flex;align-items:center;justify-content:center;
         padding:24px;
       }
       .wrtc-lobby-card{
-        display:flex;gap:0;border-radius:16px;overflow:hidden;
-        background:#2d2e31;
-        box-shadow:0 8px 40px rgba(0,0,0,.5);
+        display:flex;gap:0;border-radius:20px;overflow:hidden;
+        background:#1e2130;
+        border:1px solid rgba(255,255,255,.07);
+        box-shadow:0 24px 64px rgba(0,0,0,.65),0 2px 8px rgba(0,0,0,.3);
         max-width:860px;width:100%;
       }
       /* LEFT — preview */
@@ -398,8 +403,8 @@ class WebRTCMeetingAPI {
       .wrtc-lobby-cam-off{
         position:absolute;inset:0;
         display:none;align-items:center;justify-content:center;
-        flex-direction:column;gap:12px;background:#3c4043;
-        color:rgba(255,255,255,.5);font-size:14px;
+        flex-direction:column;gap:12px;background:#0e1018;
+        color:rgba(255,255,255,.4);font-size:14px;
       }
       .wrtc-lobby-cam-off svg{opacity:.4}
       .wrtc-lobby-preview-btns{
@@ -419,6 +424,7 @@ class WebRTCMeetingAPI {
       .wrtc-lobby-right{
         width:320px;flex-shrink:0;padding:40px 32px;
         display:flex;flex-direction:column;justify-content:center;gap:24px;
+        background:rgba(255,255,255,.02);
       }
       .wrtc-lobby-brand{
         display:flex;align-items:center;gap:10px;
@@ -444,14 +450,14 @@ class WebRTCMeetingAPI {
       .wrtc-lobby-input:focus{border-color:rgba(138,180,248,.7)}
       .wrtc-join-btn{
         width:100%;padding:13px;border-radius:10px;border:none;
-        background:#1a73e8;color:#fff;font-size:15px;font-weight:500;
+        background:linear-gradient(135deg,#1a73e8,#4d94ff);color:#fff;font-size:15px;font-weight:600;
         font-family:inherit;cursor:pointer;
-        transition:background .15s,transform .1s,box-shadow .15s;
-        box-shadow:0 2px 8px rgba(26,115,232,.4);
+        transition:opacity .15s,transform .1s,box-shadow .15s;
+        box-shadow:0 4px 20px rgba(26,115,232,.45);
       }
-      .wrtc-join-btn:hover{background:#1557b0;transform:translateY(-1px);box-shadow:0 4px 16px rgba(26,115,232,.5)}
-      .wrtc-join-btn:active{transform:translateY(0)}
-      .wrtc-join-btn:disabled{background:#4a4e52;box-shadow:none;cursor:not-allowed;transform:none}
+      .wrtc-join-btn:hover{opacity:.9;transform:translateY(-1px);box-shadow:0 6px 24px rgba(26,115,232,.55)}
+      .wrtc-join-btn:active{transform:translateY(0);opacity:1}
+      .wrtc-join-btn:disabled{background:#2a2d38;box-shadow:none;cursor:not-allowed;transform:none;opacity:.6}
       /* responsive */
       @media(max-width:600px){
         .wrtc-lobby-card{flex-direction:column}
@@ -591,12 +597,15 @@ class WebRTCMeetingAPI {
     // Show a lightweight waiting screen; full UI is built only after host admits us
     this.parentNode.innerHTML =
       '<style>@keyframes wrtc-csp{to{transform:rotate(360deg)}}</style>' +
-      '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-      'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;">' +
-      '<div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.1);' +
-      'border-top:4px solid #1a73e8;border-radius:50%;animation:wrtc-csp 1s linear infinite;"></div>' +
-      '<p id="wrtc-approval-text" style="color:#e8eaed;font-size:17px;font-weight:500;margin:0;">Connecting…</p>' +
-      '<p style="color:rgba(255,255,255,.45);font-size:13px;margin:0;">Please wait</p>' +
+      '<div style="position:fixed;inset:0;background:linear-gradient(135deg,#13151c 0%,#1a1d26 100%);display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">' +
+      '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:48px 56px;display:flex;flex-direction:column;align-items:center;gap:20px;box-shadow:0 24px 64px rgba(0,0,0,.5);">' +
+      '<div style="width:52px;height:52px;border:3px solid rgba(255,255,255,.08);' +
+      'border-top-color:#4d94ff;border-radius:50%;animation:wrtc-csp .9s linear infinite;"></div>' +
+      '<div style="text-align:center;">' +
+      '<p id="wrtc-approval-text" style="color:#e8eaed;font-size:17px;font-weight:600;margin:0 0 6px;">Connecting…</p>' +
+      '<p style="color:rgba(255,255,255,.4);font-size:13px;margin:0;">Please wait</p>' +
+      '</div></div>' +
       '</div>';
     this._setupAudioAnalyser("local", this._localStream);
     this._setupWebSocket();
@@ -687,7 +696,7 @@ class WebRTCMeetingAPI {
       .wrtc *,.wrtc *::before,.wrtc *::after{box-sizing:border-box;margin:0;padding:0}
       .wrtc{
         font-family:'Google Sans',Roboto,-apple-system,sans-serif;
-        background:#202124;color:#e8eaed;
+        background:linear-gradient(160deg,#13151c 0%,#181b24 50%,#14161e 100%);color:#e8eaed;
         height:100%;display:flex;flex-direction:column;
         position:relative;overflow:hidden;user-select:none;
       }
@@ -697,7 +706,7 @@ class WebRTCMeetingAPI {
         position:absolute;top:0;left:0;right:0;z-index:30;
         display:flex;align-items:center;justify-content:space-between;
         padding:14px 20px;
-        background:linear-gradient(to bottom,rgba(0,0,0,.6) 0%,transparent 100%);
+        background:linear-gradient(to bottom,rgba(0,0,0,.5) 0%,transparent 100%);
         pointer-events:none;
       }
       .wrtc-top>*{pointer-events:auto}
@@ -735,7 +744,7 @@ class WebRTCMeetingAPI {
       @keyframes wrtc-slide-in{from{opacity:0;transform:translateX(-50%) translateY(-12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       .wrtc-stage{
         flex:1;display:flex;align-items:stretch;
-        padding:68px 0 88px;overflow:hidden;transition:padding-right .25s;
+        padding:68px 0 108px;overflow:hidden;transition:padding-right .25s;
       }
       .wrtc-stage.panel-open{padding-right:340px}
 
@@ -748,16 +757,17 @@ class WebRTCMeetingAPI {
 
       /* ── TILE ── */
       .wrtc-tile{
-        position:relative;border-radius:12px;overflow:hidden;
-        background:#3c4043;width:100%;height:100%;min-height:0;
-        transition:box-shadow .25s;
+        position:relative;border-radius:16px;overflow:hidden;
+        background:#1a1d28;width:100%;height:100%;min-height:0;
+        transition:box-shadow .3s,transform .3s;
+        box-shadow:0 4px 24px rgba(0,0,0,.35);
       }
       .wrtc-tile video{
-        width:100%;height:100%;object-fit:cover;display:block;background:#000;
+        width:100%;height:100%;object-fit:cover;display:block;background:#0d0f14;
       }
       #wrtc-local-video{transform:scaleX(-1)}
       .wrtc-tile.speaking{
-        box-shadow:0 0 0 3px #1a73e8,0 0 20px rgba(26,115,232,.4);
+        box-shadow:0 0 0 3px #4d94ff,0 0 0 7px rgba(77,148,255,.15),0 8px 40px rgba(77,148,255,.25);
       }
       .wrtc-tile-avatar{
         position:absolute;inset:0;
@@ -794,7 +804,7 @@ class WebRTCMeetingAPI {
         position:absolute;
         top:0;left:0;right:0;bottom:0;
         width:100% !important;height:100% !important;
-        z-index:8;border-radius:10px;
+        z-index:8;border-radius:14px;
       }
       .wrtc-tile.presenter .wrtc-tile-label{
         font-size:13px;padding:5px 12px;
@@ -808,13 +818,14 @@ class WebRTCMeetingAPI {
       .wrtc-tile.presenter .wrtc-presenter-badge{ display:block; }
       /* thumbnails strip while presenter is active */
       .wrtc-thumbs{
-        position:absolute;bottom:96px;left:12px;
+        position:absolute;bottom:108px;left:12px;
         display:none;flex-direction:row;gap:6px;z-index:25;
       }
       .wrtc-thumb-tile{
-        width:140px;height:79px;border-radius:8px;overflow:hidden;
-        background:#3c4043;position:relative;flex-shrink:0;
-        border:1px solid rgba(255,255,255,.15);
+        width:140px;height:79px;border-radius:10px;overflow:hidden;
+        background:#1a1d28;position:relative;flex-shrink:0;
+        border:1px solid rgba(255,255,255,.1);
+        box-shadow:0 4px 16px rgba(0,0,0,.4);
       }
       .wrtc-thumb-tile video{
         width:100%;height:100%;object-fit:cover;display:block;
@@ -827,7 +838,7 @@ class WebRTCMeetingAPI {
 
       /* ── WAITING (full-screen, shown when alone) ── */
       .wrtc-waiting{
-        position:absolute;inset:0;z-index:20;background:#202124;
+        position:absolute;inset:0;z-index:20;background:transparent;
         display:none;flex-direction:column;align-items:center;justify-content:center;
         gap:16px;color:rgba(255,255,255,.75);text-align:center;padding:40px;
       }
@@ -845,7 +856,7 @@ class WebRTCMeetingAPI {
       .wrtc-pip-avatar{
         position:absolute;inset:0;display:none;z-index:2;
         align-items:center;justify-content:center;
-        background:#3c4043;
+        background:#1a1d28;
       }
       .wrtc-pip-avatar span{
         width:clamp(48px,8vw,88px);height:clamp(48px,8vw,88px);border-radius:50%;
@@ -860,30 +871,35 @@ class WebRTCMeetingAPI {
 
       /* ── CONTROLS ── */
       .wrtc-controls{
-        position:absolute;bottom:0;left:0;right:0;z-index:30;
-        display:flex;align-items:center;justify-content:center;gap:8px;
-        padding:14px 20px 18px;
-        background:linear-gradient(to top,rgba(0,0,0,.7) 0%,transparent 100%);
+        position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:30;
+        display:flex;align-items:center;justify-content:center;gap:6px;
+        padding:10px 16px;
+        background:rgba(18,20,28,0.88);
+        backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+        border-radius:56px;
+        border:1px solid rgba(255,255,255,.09);
+        box-shadow:0 8px 40px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.06);
+        white-space:nowrap;
       }
       .wrtc-btn{
-        width:50px;height:50px;border-radius:50%;border:none;
-        background:rgba(255,255,255,.12);color:#e8eaed;cursor:pointer;
+        width:46px;height:46px;border-radius:50%;border:none;
+        background:rgba(255,255,255,.09);color:#e8eaed;cursor:pointer;
         display:flex;align-items:center;justify-content:center;position:relative;
-        transition:background .15s,transform .1s;flex-shrink:0;
-        outline:none;backdrop-filter:blur(4px);
+        transition:background .15s,transform .12s,box-shadow .15s;flex-shrink:0;
+        outline:none;
       }
-      .wrtc-btn:hover{background:rgba(255,255,255,.2);transform:scale(1.06)}
-      .wrtc-btn:active{transform:scale(.93)}
-      .wrtc-btn.muted,.wrtc-btn.active-feature{background:#ea4335;color:#fff}
-      .wrtc-btn.muted:hover,.wrtc-btn.active-feature:hover{background:#d33828}
-      .wrtc-btn.on-air{background:#1a73e8;color:#fff}
-      .wrtc-btn.on-air:hover{background:#1557b0}
+      .wrtc-btn:hover{background:rgba(255,255,255,.17);transform:scale(1.07);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+      .wrtc-btn:active{transform:scale(.91)}
+      .wrtc-btn.muted,.wrtc-btn.active-feature{background:rgba(234,67,53,.9);color:#fff;box-shadow:0 2px 12px rgba(234,67,53,.4)}
+      .wrtc-btn.muted:hover,.wrtc-btn.active-feature:hover{background:#ea4335}
+      .wrtc-btn.on-air{background:rgba(26,115,232,.9);color:#fff;box-shadow:0 2px 12px rgba(26,115,232,.4)}
+      .wrtc-btn.on-air:hover{background:#1a73e8}
       .wrtc-btn-badge{
-        position:absolute;top:2px;right:2px;
+        position:absolute;top:1px;right:1px;
         width:16px;height:16px;border-radius:50%;
         background:#ea4335;color:#fff;font-size:9px;font-weight:700;
         display:none;align-items:center;justify-content:center;
-        border:2px solid #202124;
+        border:2px solid rgba(18,20,28,0.88);
       }
       .wrtc-btn-badge.show{display:flex}
       .wrtc-btn-label{
@@ -892,16 +908,18 @@ class WebRTCMeetingAPI {
         pointer-events:none;
       }
       .wrtc-btn-leave{
-        width:auto;border-radius:28px;padding:0 24px;gap:8px;
-        background:#ea4335;color:#fff;font-size:14px;font-weight:500;
+        width:auto;border-radius:28px;padding:0 20px;gap:7px;
+        background:rgba(234,67,53,.9);color:#fff;font-size:14px;font-weight:600;
+        box-shadow:0 2px 12px rgba(234,67,53,.35);
       }
-      .wrtc-btn-leave:hover{background:#d33828;transform:scale(1.03)}
-      .wrtc-divider{width:1px;height:32px;background:rgba(255,255,255,.15);flex-shrink:0;margin:0 2px}
+      .wrtc-btn-leave:hover{background:#ea4335;transform:scale(1.04)}
+      .wrtc-divider{width:1px;height:28px;background:rgba(255,255,255,.12);flex-shrink:0;margin:0 2px}
 
       /* ── SIDE PANEL (People + Chat) ── */
       .wrtc-side-panel{
         position:absolute;top:0;right:0;bottom:0;width:340px;z-index:32;
-        background:#202124;border-left:1px solid rgba(255,255,255,.08);
+        background:rgba(18,20,28,0.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+        border-left:1px solid rgba(255,255,255,.07);
         display:flex;flex-direction:column;
         transform:translateX(100%);transition:transform .25s cubic-bezier(.4,0,.2,1);
         pointer-events:none;
@@ -1482,13 +1500,70 @@ class WebRTCMeetingAPI {
         document.getElementById("wrtc-ico-share").style.display     = "none";
         document.getElementById("wrtc-ico-share-stop").style.display = "";
         this._setLocalPresenter();
-        this._sendWS({ type: "presenting", payload: { active: true } });
+        // Delay the "presenting" signal so remote peers receive the first
+        // screen keyframe before they expand the tile (avoids blank/camera flash)
+        setTimeout(() => {
+          if (this._isSharing) this._sendWS({ type: "presenting", payload: { active: true } });
+        }, 800);
         this._toast("You are now presenting");
       } catch (err) {
         if (err.name !== "NotAllowedError") this._toast("Screen share failed");
         this._log("Screen share error: " + err.message, undefined, "error");
       }
     }
+  }
+
+  _waitForPresenterVideo(userId) {
+    const tile  = document.getElementById(`wrtc-tile-${userId}`);
+    const video = tile?.querySelector("video");
+
+    if (!video) {
+      // Tile not in DOM yet — poll briefly until it appears (max 5 s)
+      let elapsed = 0;
+      const poll = setInterval(() => {
+        elapsed += 100;
+        const t = document.getElementById(`wrtc-tile-${userId}`);
+        const v = t?.querySelector("video");
+        if (v) {
+          clearInterval(poll);
+          this._waitForPresenterVideo(userId);
+        } else if (elapsed >= 5000) {
+          clearInterval(poll);
+          this._setPresenter(userId);
+        }
+      }, 100);
+      return;
+    }
+
+    // If video is not yet playing at all, wait for it to start first
+    if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+      const onStart = () => {
+        video.removeEventListener("playing", onStart);
+        this._waitForPresenterVideo(userId);
+      };
+      video.addEventListener("playing", onStart, { once: true });
+      return;
+    }
+
+    // Camera is already playing — wait for the video dimensions to change,
+    // which signals that the screen share frames have actually arrived
+    // (replaceTrack switches content; screen resolution differs from camera)
+    const prevW = video.videoWidth;
+    const prevH = video.videoHeight;
+
+    const onResize = () => {
+      clearTimeout(fallback);
+      video.removeEventListener("resize", onResize);
+      this._setPresenter(userId);
+    };
+
+    const fallback = setTimeout(() => {
+      video.removeEventListener("resize", onResize);
+      // Fallback: expand anyway (same-resolution case or slow network)
+      this._setPresenter(userId);
+    }, 5000);
+
+    video.addEventListener("resize", onResize);
   }
 
   _setPresenter(userId) {
@@ -1632,9 +1707,24 @@ class WebRTCMeetingAPI {
         this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
         this._mediaRecorder.onstop = () => {
           const blob = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
-          const url  = URL.createObjectURL(blob);
-          Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` }).click();
-          URL.revokeObjectURL(url);
+          const embedToken = this._embedTokenSaved || '';
+          const roomName   = this.roomName || '';
+          if (embedToken) {
+            const form = new FormData();
+            form.append('file', blob, `recording-${Date.now()}.webm`);
+            fetch(
+              this._httpBase + '/api/v1/projects/recordings/upload'
+              + '?embed_token=' + encodeURIComponent(embedToken)
+              + '&room_name='   + encodeURIComponent(roomName),
+              { method: 'POST', body: form }
+            )
+              .then(r => r.ok ? this._toast('Recording saved to dashboard') : this._toast('Recording upload failed'))
+              .catch(() => this._toast('Recording upload failed'));
+          } else {
+            const url = URL.createObjectURL(blob);
+            Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` }).click();
+            URL.revokeObjectURL(url);
+          }
         };
         tabStream.getVideoTracks()[0].onended = () => { if (this._isRecording) this._toggleRecording(); };
         this._mediaRecorder.start(1000);
@@ -2399,8 +2489,7 @@ class WebRTCMeetingAPI {
         const name = this._displayName(from);
         if (payload.active) {
           this._toast(`${name} is presenting`);
-          // Wait briefly for the tile to be ready, then expand it
-          setTimeout(() => this._setPresenter(from), 300);
+          this._waitForPresenterVideo(from);
         } else {
           this._clearPresenter();
           this._toast(`${name} stopped presenting`);

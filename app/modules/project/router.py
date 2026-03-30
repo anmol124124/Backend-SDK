@@ -1,7 +1,8 @@
 import logging
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,10 @@ from app.modules.project.schemas import (
 )
 from app.modules.project.service import ProjectService, _make_guest_token
 from app.modules.project.embed_check import check_embed_domain
-from app.modules.project.models import Project, ProjectMeeting, ProjectMeetingParticipant
+from app.modules.project.models import Project, ProjectMeeting, ProjectMeetingParticipant, ProjectRecording
 from sqlalchemy import select
+
+_PUBLIC_DIR = Path(__file__).parent.parent.parent.parent / "public"
 
 router = APIRouter(prefix="/projects", tags=["Projects"], redirect_slashes=False)
 
@@ -335,3 +338,160 @@ async def delete_domain(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await ProjectService.delete_domain(db, project_id, domain_id, user.id)
+
+
+# ── Recording upload (public — uses embed token) ──────────────────────────────
+
+@router.post("/recordings/upload")
+async def upload_recording(
+    embed_token: str,
+    room_name: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    from jose import JWTError, jwt as jose_jwt
+    from app.core.config import settings as _settings
+    import uuid as _uuid_mod
+    try:
+        token_payload = jose_jwt.decode(
+            embed_token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM]
+        )
+    except JWTError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid embed token")
+    raw_project_id = token_payload.get("project_id")
+    if not raw_project_id or token_payload.get("role") != "host":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Not a host token")
+    project_id = _uuid_mod.UUID(raw_project_id)
+
+    recordings_dir = _PUBLIC_DIR / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename).suffix if file.filename else ".webm"
+    if not ext:
+        ext = ".webm"
+    filename = f"{_uuid_mod.uuid4()}{ext}"
+    file_path = recordings_dir / filename
+
+    content = await file.read()
+    file_path.write_bytes(content)
+
+    url = f"{_settings.BACKEND_PUBLIC_URL}/public/recordings/{filename}"
+
+    recording = ProjectRecording(
+        id=_uuid_mod.uuid4(),
+        project_id=project_id,
+        room_name=room_name,
+        filename=filename,
+        url=url,
+        file_size=len(content),
+    )
+    db.add(recording)
+    await db.commit()
+    await db.refresh(recording)
+
+    return {
+        "id": str(recording.id),
+        "filename": recording.filename,
+        "url": recording.url,
+        "file_size": recording.file_size,
+        "room_name": recording.room_name,
+        "created_at": recording.created_at.isoformat(),
+    }
+
+
+# ── List recordings (authenticated) ──────────────────────────────────────────
+
+@router.get("/{project_id}/recordings")
+async def list_recordings(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await ProjectService.get_project(db, project_id, user.id)
+    result = await db.execute(
+        select(ProjectRecording)
+        .where(ProjectRecording.project_id == project_id)
+        .order_by(ProjectRecording.created_at.desc())
+    )
+    recordings = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "room_name": r.room_name,
+            "filename": r.filename,
+            "url": r.url,
+            "file_size": r.file_size,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in recordings
+    ]
+
+
+# ── Activity feed (authenticated) ─────────────────────────────────────────────
+
+@router.get("/{project_id}/activity")
+async def project_activity(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await ProjectService.get_project(db, project_id, user.id)
+
+    meetings_result = await db.execute(
+        select(ProjectMeeting)
+        .where(ProjectMeeting.project_id == project_id)
+        .order_by(ProjectMeeting.created_at.desc())
+        .limit(50)
+    )
+    meetings = meetings_result.scalars().all()
+
+    room_names = [m.room_name for m in meetings]
+    meeting_map = {m.room_name: m for m in meetings}
+
+    parts_result = await db.execute(
+        select(ProjectMeetingParticipant)
+        .where(ProjectMeetingParticipant.room_name.in_(room_names))
+        .order_by(ProjectMeetingParticipant.joined_at.desc())
+    )
+    participants = parts_result.scalars().all()
+
+    events = []
+    for m in meetings:
+        events.append({
+            "type": "meeting_started",
+            "title": m.title,
+            "room_name": m.room_name,
+            "timestamp": m.created_at.isoformat(),
+        })
+        if m.ended_at:
+            events.append({
+                "type": "meeting_ended",
+                "title": m.title,
+                "room_name": m.room_name,
+                "timestamp": m.ended_at.isoformat(),
+            })
+
+    for p in participants:
+        m = meeting_map.get(p.room_name)
+        events.append({
+            "type": "participant_joined",
+            "display_name": p.display_name,
+            "role": p.role,
+            "room_name": p.room_name,
+            "meeting_title": m.title if m else p.room_name,
+            "timestamp": p.joined_at.isoformat(),
+        })
+        if p.left_at:
+            events.append({
+                "type": "participant_left",
+                "display_name": p.display_name,
+                "role": p.role,
+                "room_name": p.room_name,
+                "meeting_title": m.title if m else p.room_name,
+                "timestamp": p.left_at.isoformat(),
+            })
+
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+    return {"events": events[:100]}
