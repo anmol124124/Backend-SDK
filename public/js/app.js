@@ -1686,7 +1686,6 @@ class WebRTCMeetingAPI {
         const tabStream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: 30 },
           audio: true,
-          preferCurrentTab: true,
         });
         this._recordTabStream = tabStream;
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
