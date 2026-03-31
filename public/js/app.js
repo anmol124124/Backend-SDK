@@ -77,6 +77,7 @@ class WebRTCMeetingAPI {
     this._myName        = "";
     this._peerNames     = {};   // userId → display name
     this._participants  = {};   // userId → name (everyone in room)
+    this._camStates     = {};   // userId → boolean (true=on, false=off)
     this._panelTab      = null; // "people" | "chat" | null
 
     // Misc
@@ -361,7 +362,16 @@ class WebRTCMeetingAPI {
           stream.getVideoTracks().forEach(t => { t.enabled = false; });
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        // Camera unavailable — fallback to audio-only
+        this._camEnabled = false;
+        return navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(audioStream => {
+            this._localStream = audioStream;
+            this._setupAudioAnalyser("local", audioStream);
+          })
+          .catch(() => { this._localStream = null; this._micEnabled = false; });
+      })
       .finally(() => {
         sessionStorage.setItem('wrtc_name_' + this.roomName, name);
         this._setupWebSocket();
@@ -560,6 +570,25 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-lobby-mic-off").style.display = this._micEnabled ? "none" : "";
     });
     document.getElementById("wrtc-lobby-cam").addEventListener("click", () => {
+      const hasVideo = (this._localStream?.getVideoTracks().length ?? 0) > 0;
+      if (!this._camEnabled && !hasVideo) {
+        // No video track yet — ask for camera permission now
+        navigator.mediaDevices.getUserMedia({ video: true })
+          .then(stream => {
+            const track = stream.getVideoTracks()[0];
+            if (!this._localStream) { this._localStream = stream; }
+            else { this._localStream.addTrack(track); }
+            document.getElementById("wrtc-lobby-video").srcObject        = this._localStream;
+            this._camEnabled = true;
+            document.getElementById("wrtc-lobby-cam").classList.remove("muted");
+            document.getElementById("wrtc-lobby-cam-on").style.display       = "";
+            document.getElementById("wrtc-lobby-cam-icon-off").style.display = "none";
+            document.getElementById("wrtc-lobby-video").style.display        = "block";
+            document.getElementById("wrtc-lobby-cam-off").style.display      = "none";
+          })
+          .catch(() => { /* permission denied — stay cam-off */ });
+        return;
+      }
       this._camEnabled = !this._camEnabled;
       this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
       document.getElementById("wrtc-lobby-cam").classList.toggle("muted", !this._camEnabled);
@@ -591,9 +620,17 @@ class WebRTCMeetingAPI {
       this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       document.getElementById("wrtc-lobby-video").srcObject = this._localStream;
     } catch (err) {
-      this._log("Preview camera failed: " + err.message, undefined, "warn");
+      this._log("Camera unavailable: " + err.message, undefined, "warn");
       document.getElementById("wrtc-lobby-cam-off").style.display = "flex";
       document.getElementById("wrtc-lobby-video").style.display   = "none";
+      this._camEnabled = false;
+      // Fallback: audio-only so the participant can still speak without a camera
+      try {
+        this._localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (_) {
+        this._localStream = null;
+        this._micEnabled  = false;
+      }
     }
   }
 
@@ -856,8 +893,11 @@ class WebRTCMeetingAPI {
       .wrtc-tile{cursor:pointer;}
 
       /* ── PRESENTATION MODE ── */
+      .wrtc-stage.presenting{
+        flex-direction:row;
+      }
       .wrtc-stage.presenting .wrtc-grid{
-        position:relative;
+        flex:1;position:relative;min-width:0;
       }
       .wrtc-tile.presenter{
         position:absolute;
@@ -875,13 +915,20 @@ class WebRTCMeetingAPI {
         display:none;letter-spacing:.3px;
       }
       .wrtc-tile.presenter .wrtc-presenter-badge{ display:block; }
-      /* thumbnails strip while presenter is active */
+      /* right-side participant strip during presentation */
       .wrtc-thumbs{
-        position:absolute;bottom:108px;left:12px;
-        display:none;flex-direction:row;gap:6px;z-index:25;
+        display:none;flex-direction:column;
+        gap:8px;width:220px;flex-shrink:0;
+        overflow-y:auto;overflow-x:hidden;
+        padding:8px 6px;
+        background:rgba(0,0,0,.18);
+        border-left:1px solid rgba(255,255,255,.06);
+        scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.15) transparent;
       }
+      .wrtc-thumbs::-webkit-scrollbar{width:4px}
+      .wrtc-thumbs::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:4px}
       .wrtc-thumb-tile{
-        width:140px;height:79px;border-radius:10px;overflow:hidden;
+        width:100%;aspect-ratio:16/9;border-radius:10px;overflow:hidden;
         background:#1a1d28;position:relative;flex-shrink:0;
         border:1px solid rgba(255,255,255,.1);
         box-shadow:0 4px 16px rgba(0,0,0,.4);
@@ -1228,10 +1275,9 @@ class WebRTCMeetingAPI {
           <small>Share the room link to invite participants</small>
           <small style="opacity:.35;font-size:11px">Room: <strong id="wrtc-room-hint"></strong></small>
         </div>
-      </div>
-
-      <!-- Thumbnail strip (shown during presentation) -->
+      <!-- Participant strip — right-side panel, visible during presentation -->
       <div class="wrtc-thumbs" id="wrtc-thumbs"></div>
+      </div>
 
       <!-- PiP hidden — local video is now in the grid -->
       <div class="wrtc-pip" id="wrtc-pip" style="display:none"></div>
@@ -1419,8 +1465,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-room-name").textContent      = this.roomName;
     document.getElementById("wrtc-room-hint").textContent      = this.roomName;
     document.getElementById("wrtc-pip-label").textContent      = this._myName || "You";
-    document.getElementById("wrtc-pip-avatar-text").textContent = this._myName
-      ? this._myName.slice(0, 2).toUpperCase() : "YO";
+    document.getElementById("wrtc-pip-avatar-text").textContent = this._getInitials(this._myName || "You");
     // Block browser's native video right-click context menu ("Show controls" etc.)
     this.parentNode.addEventListener("contextmenu", (e) => {
       if (e.target.tagName === "VIDEO") e.preventDefault();
@@ -1554,6 +1599,41 @@ class WebRTCMeetingAPI {
       return;
     }
     if (!this._camEnabled && this._hostMutedCam) this._hostMutedCam = false;
+
+    // No video track at all — request camera permission on first enable
+    if (!this._camEnabled && !(this._localStream?.getVideoTracks().length)) {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(async camStream => {
+          const track = camStream.getVideoTracks()[0];
+          if (!this._localStream) { this._localStream = camStream; }
+          else { this._localStream.addTrack(track); }
+          // Add track to all peer connections (renegotiate if no video sender yet)
+          for (const [peerId, pc] of Object.entries(this._peerConnections)) {
+            const videoSender = pc.getSenders().find(s => s.track?.kind === "video");
+            if (videoSender) {
+              await videoSender.replaceTrack(track);
+            } else {
+              pc.addTrack(track, this._localStream);
+              await this._initiateOffer(peerId);
+            }
+          }
+          this._camEnabled = true;
+          sessionStorage.setItem('wrtc_cam_' + this.roomName, '1');
+          document.getElementById("wrtc-btn-cam").classList.remove("muted");
+          document.getElementById("wrtc-ico-cam").style.display     = "";
+          document.getElementById("wrtc-ico-cam-off").style.display = "none";
+          document.getElementById("wrtc-local-video").srcObject     = this._localStream;
+          document.getElementById("wrtc-local-video").style.display = "block";
+          document.getElementById("wrtc-pip-avatar").style.display  = "none";
+          this._sendWS({ type: "cam-state", payload: { enabled: true } });
+          this._toast("Camera on");
+        })
+        .catch(err => {
+          this._toast(err.name === "NotAllowedError" ? "Camera permission denied" : "No camera available");
+        });
+      return;
+    }
+
     this._camEnabled = !this._camEnabled;
     this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
     sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
@@ -1562,6 +1642,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-ico-cam-off").style.display = this._camEnabled ? "none" : "";
     document.getElementById("wrtc-local-video").style.display = this._camEnabled ? "block" : "none";
     document.getElementById("wrtc-pip-avatar").style.display  = this._camEnabled ? "none"  : "flex";
+    this._sendWS({ type: "cam-state", payload: { enabled: this._camEnabled } });
     this._toast(this._camEnabled ? "Camera on" : "Camera off");
   }
 
@@ -1613,7 +1694,7 @@ class WebRTCMeetingAPI {
     const video = tile?.querySelector("video");
 
     if (!video) {
-      // Tile not in DOM yet — poll briefly until it appears (max 5 s)
+      // Tile not in DOM yet (late-joiner case) — poll until it appears
       let elapsed = 0;
       const poll = setInterval(() => {
         elapsed += 100;
@@ -1621,7 +1702,16 @@ class WebRTCMeetingAPI {
         const v = t?.querySelector("video");
         if (v) {
           clearInterval(poll);
-          this._waitForPresenterVideo(userId);
+          // Late-joiner: video already carries the screen-share track from the start,
+          // so a resize event will never fire. Expand as soon as video is playing.
+          if (v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+            this._setPresenter(userId);
+          } else {
+            let done = false;
+            const expand = () => { if (done) return; done = true; this._setPresenter(userId); };
+            v.addEventListener("playing", expand, { once: true });
+            setTimeout(expand, 5000);
+          }
         } else if (elapsed >= 5000) {
           clearInterval(poll);
           this._setPresenter(userId);
@@ -1630,7 +1720,8 @@ class WebRTCMeetingAPI {
       return;
     }
 
-    // If video is not yet playing at all, wait for it to start first
+    // Tile exists — existing participant: track replacement is in progress.
+    // If video is not yet playing at all, wait for it to start first.
     if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
       const onStart = () => {
         video.removeEventListener("playing", onStart);
@@ -1641,24 +1732,17 @@ class WebRTCMeetingAPI {
     }
 
     // Camera is already playing — wait for the video dimensions to change,
-    // which signals that the screen share frames have actually arrived
-    // (replaceTrack switches content; screen resolution differs from camera)
-    const prevW = video.videoWidth;
-    const prevH = video.videoHeight;
-
-    const onResize = () => {
-      clearTimeout(fallback);
-      video.removeEventListener("resize", onResize);
+    // which signals that the screen share frames have actually arrived.
+    let done = false;
+    const expand = () => {
+      if (done) return;
+      done = true;
       this._setPresenter(userId);
     };
 
-    const fallback = setTimeout(() => {
-      video.removeEventListener("resize", onResize);
-      // Fallback: expand anyway (same-resolution case or slow network)
-      this._setPresenter(userId);
-    }, 5000);
-
-    video.addEventListener("resize", onResize);
+    video.addEventListener("resize", expand, { once: true });
+    // Fallback for same-resolution screens or slow networks — reduced from 5000ms
+    setTimeout(expand, 1500);
   }
 
   _setPresenter(userId) {
@@ -1667,8 +1751,12 @@ class WebRTCMeetingAPI {
     stage?.classList.add("presenting");
     thumbs.innerHTML = "";
 
+    const presenterName = this._displayName(userId);
+
     document.querySelectorAll(".wrtc-tile").forEach(tile => {
       if (tile.id === `wrtc-tile-${userId}`) {
+        const badge = tile.querySelector(".wrtc-presenter-badge");
+        if (badge) badge.textContent = `${presenterName} is presenting`;
         tile.classList.add("presenter");
       } else {
         this._addThumb(tile, thumbs);
@@ -2493,8 +2581,11 @@ class WebRTCMeetingAPI {
       console.log('[WRTC] WS opened  room=' + this.roomName + '  name=' + this._myName);
       this._log("WS connected", undefined, "ok");
       this._setStatus("ok");
-      // Tell everyone in the room our name
+      // Tell everyone in the room our name and current camera state
       this._sendWS({ type: "name", payload: { name: this._myName } });
+      if (!this._camEnabled) {
+        this._sendWS({ type: "cam-state", payload: { enabled: false } });
+      }
     };
     this._ws.onclose   = (e) => {
       console.warn('[WRTC] WS closed  code=' + e.code + '  reason=' + e.reason);
@@ -2576,8 +2667,11 @@ class WebRTCMeetingAPI {
         if (payload.name) this._peerNames[payload.user_id] = payload.name;
         this._participants[payload.user_id] = this._displayName(payload.user_id);
         this._renderParticipants();
-        // Tell the new joiner our name
+        // Tell the new joiner our name and camera state
         this._sendWS({ type: "name", payload: { name: this._myName } });
+        if (!this._camEnabled) {
+          this._sendWS({ type: "cam-state", payload: { enabled: false } });
+        }
         // If we're presenting, re-announce so late joiner gets the layout
         if (this._isSharing) {
           setTimeout(() => this._sendWS({ type: "presenting", payload: { active: true } }), 800);
@@ -2757,9 +2851,24 @@ class WebRTCMeetingAPI {
       case "error":
         this._log("Server error: " + payload.detail, undefined, "error");
         if (payload.code === "mau_limit_reached") {
-          setTimeout(() => { if (this._onLeave) this._onLeave('mau_limit_reached'); }, 500);
+          this._localStream?.getTracks().forEach(t => t.stop());
+          this._ws?.close();
+          this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#202124;z-index:99999;';
+          this.parentNode.innerHTML =
+            '<div style="text-align:center;padding:40px;background:#2d2e31;border:1px solid #3c3f45;border-radius:16px;max-width:380px;font-family:sans-serif">' +
+              '<div style="font-size:48px;margin-bottom:16px">\uD83D\uDEAB</div>' +
+              '<h2 style="color:#e8eaed;font-size:18px;margin:0 0 8px;font-weight:500">Unable to join meeting</h2>' +
+              '<p style="color:#9aa0a6;font-size:14px;margin:0">Please contact the admin to join this meeting.</p>' +
+            '</div>';
         }
         break;
+
+      case "cam-state": {
+        this._camStates[from] = payload.enabled;
+        const avatarEl = document.getElementById(`wrtc-avatar-${from}`);
+        if (avatarEl) avatarEl.classList.toggle("visible", !payload.enabled);
+        break;
+      }
 
       case "mau_warning":
         this._toastLong("⚠️ MAU limit reached — a participant was blocked. Upgrade your plan to allow more participants.");
@@ -2951,13 +3060,21 @@ class WebRTCMeetingAPI {
     avatarWrap.id        = `wrtc-avatar-${userId}`;
     const avatar = document.createElement("span");
     avatar.style.background = this._colorFromId(userId);
-    avatar.textContent      = this._displayName(userId).slice(0, 2).toUpperCase() || "?";
+    avatar.textContent      = this._getInitials(this._displayName(userId));
     avatarWrap.appendChild(avatar);
 
-    // Show avatar when remote video track goes silent (camera off)
+    // Apply stored cam state immediately (cam-state message may have arrived before tile was created)
+    if (this._camStates[userId] === false) {
+      avatarWrap.classList.add("visible");
+    }
+    // Keep avatar in sync via track mute events, but cam-state takes precedence.
+    // "unmute" can fire when the remote sends black frames (track.enabled=false on sender side),
+    // so only remove the avatar if cam-state explicitly says the camera is on.
     stream.getVideoTracks().forEach(track => {
       track.addEventListener("mute",   () => avatarWrap.classList.add("visible"));
-      track.addEventListener("unmute", () => avatarWrap.classList.remove("visible"));
+      track.addEventListener("unmute", () => {
+        if (this._camStates[userId] !== false) avatarWrap.classList.remove("visible");
+      });
     });
 
     const label = document.createElement("div");
@@ -2997,6 +3114,13 @@ class WebRTCMeetingAPI {
     if (!userId) return "Unknown";
     if (userId === "local") return this._myName || "You";
     return this._peerNames[userId] || ("User " + (userId.split("_").pop() || userId).slice(0, 6));
+  }
+
+  _getInitials(name) {
+    if (!name) return "?";
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
 
   _updateUserCount(n) {
