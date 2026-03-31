@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "" }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -28,6 +28,7 @@ class WebRTCMeetingAPI {
     this._guestToken = guestToken;
     this._shareUrl   = shareUrl;
     this._embedToken = embedToken;
+    this._logoUrl    = logoUrl || "";
     this.parentNode  = parentNode;
     this._onLeave    = onLeave;
 
@@ -40,8 +41,9 @@ class WebRTCMeetingAPI {
     // Media toggles
     this._micEnabled  = true;
     this._camEnabled  = true;
-    this._isSharing   = false;
-    this._shareStream = null;
+    this._isSharing     = false;
+    this._shareStream   = null;
+    this._pinnedTileId  = null;
 
     // Recording
     this._isRecording   = false;
@@ -746,6 +748,15 @@ class WebRTCMeetingAPI {
         flex:1;display:flex;align-items:stretch;
         padding:68px 0 108px;overflow:hidden;transition:padding-right .25s;
       }
+
+      /* ── BRANDING LOGO ── */
+      .wrtc-logo{
+        position:fixed;top:74px;left:16px;z-index:50;
+        max-height:52px;max-width:160px;
+        object-fit:contain;border-radius:6px;
+        opacity:0.9;pointer-events:none;
+        filter:drop-shadow(0 1px 4px rgba(0,0,0,.5));
+      }
       .wrtc-stage.panel-open{padding-right:340px}
 
       /* ── GRID ── */
@@ -795,6 +806,28 @@ class WebRTCMeetingAPI {
       }
       @keyframes wrtc-bounce{from{transform:translateY(0)}to{transform:translateY(-4px)}}
       .wrtc-tile-hand.raised{display:block}
+
+      /* ── PIN / SPOTLIGHT ── */
+      .wrtc-tile.wrtc-pinned{
+        position:absolute;top:0;left:0;right:0;bottom:0;
+        width:100% !important;height:100% !important;
+        z-index:15;border-radius:14px;cursor:default;
+      }
+      .wrtc-pin-close{
+        position:absolute;top:10px;left:50%;z-index:20;
+        transform:translateX(-50%);
+        width:32px;height:32px;border-radius:50%;
+        background:rgba(0,0,0,.65);backdrop-filter:blur(6px);
+        border:1px solid rgba(255,255,255,.22);
+        display:none;align-items:center;justify-content:center;
+        cursor:pointer;color:#fff;font-size:15px;line-height:1;
+        transition:background .15s,transform .15s;
+      }
+      .wrtc-pin-close:hover{ background:rgba(220,50,50,.8);transform:translateX(-50%) scale(1.12); }
+      .wrtc-tile.wrtc-pinned .wrtc-pin-close{ display:flex; }
+      .wrtc-grid.has-pin .wrtc-tile:not(.wrtc-pinned){ visibility:hidden; }
+      .wrtc-tile{ cursor:pointer; }
+      .wrtc-tile.wrtc-pinned{ cursor:default; }
 
       /* ── PRESENTATION MODE ── */
       .wrtc-stage.presenting .wrtc-grid{
@@ -1336,12 +1369,36 @@ class WebRTCMeetingAPI {
       <div class="wrtc-toast" id="wrtc-toast"></div>
     </div>`;
 
+    // Inject branding logo (embed-only — only present when logoUrl was passed)
+    if (this._logoUrl) {
+      const logo = document.createElement("img");
+      logo.className = "wrtc-logo";
+      logo.src = this._logoUrl;
+      logo.alt = "Brand logo";
+      this.parentNode.appendChild(logo);
+    }
+
     // Wire up static elements
     document.getElementById("wrtc-room-name").textContent      = this.roomName;
     document.getElementById("wrtc-room-hint").textContent      = this.roomName;
     document.getElementById("wrtc-pip-label").textContent      = this._myName || "You";
     document.getElementById("wrtc-pip-avatar-text").textContent = this._myName
       ? this._myName.slice(0, 2).toUpperCase() : "YO";
+    // Block browser's native video right-click context menu ("Show controls" etc.)
+    this.parentNode.addEventListener("contextmenu", (e) => {
+      if (e.target.tagName === "VIDEO") e.preventDefault();
+    });
+
+    // Local tile — pin on click
+    const localTile = document.getElementById("wrtc-local-tile");
+    this._addPinButton(localTile);
+    localTile.addEventListener("click", () => {
+      if (this._pinnedTileId === "wrtc-local-tile") { this._unpinTile(); return; }
+      if (document.getElementById("wrtc-grid").classList.contains("has-pin")) return;
+      // Only pin when others are present
+      if (Object.keys(this._peerConnections).length > 0) this._pinTile("wrtc-local-tile");
+    });
+
     document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
     document.getElementById("wrtc-btn-invite").addEventListener("click", () => this._showInvite());
     document.getElementById("wrtc-btn-muteall").addEventListener("click", () => {
@@ -1492,6 +1549,7 @@ class WebRTCMeetingAPI {
       try {
         this._shareStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         this._isSharing   = true;
+        this._unpinTile(); // clear any pin before entering presentation mode
         sessionStorage.setItem('wrtc_sharing_' + this.roomName, '1');
         const screenTrack = this._shareStream.getVideoTracks()[0];
         screenTrack.onended = () => { if (this._isSharing) this._toggleScreenShare(); };
@@ -2029,6 +2087,15 @@ class WebRTCMeetingAPI {
     this._toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
   }
 
+  _toastLong(msg) {
+    const el = document.getElementById("wrtc-toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove("show"), 7000);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // GRID LAYOUT
   // ═══════════════════════════════════════════════════════════════════════
@@ -2231,6 +2298,45 @@ class WebRTCMeetingAPI {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // PIN / SPOTLIGHT
+  // ═══════════════════════════════════════════════════════════════════════
+  _pinTile(tileId) {
+    // Don't pin during screen-share presentation
+    if (this._isSharing || document.getElementById("wrtc-stage")?.classList.contains("presenting")) return;
+    const grid = document.getElementById("wrtc-grid");
+    if (!grid) return;
+    // Unpin any existing pin first
+    this._unpinTile();
+    const tile = document.getElementById(tileId);
+    if (!tile) return;
+    this._pinnedTileId = tileId;
+    tile.classList.add("wrtc-pinned");
+    grid.classList.add("has-pin");
+  }
+
+  _unpinTile() {
+    const grid = document.getElementById("wrtc-grid");
+    if (!grid) return;
+    if (this._pinnedTileId) {
+      document.getElementById(this._pinnedTileId)?.classList.remove("wrtc-pinned");
+      this._pinnedTileId = null;
+    }
+    grid.classList.remove("has-pin");
+  }
+
+  _addPinButton(tile) {
+    const btn = document.createElement("div");
+    btn.className = "wrtc-pin-close";
+    btn.innerHTML = "&#x2715;";
+    btn.title = "Exit spotlight";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._unpinTile();
+    });
+    tile.appendChild(btn);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // LOGGER
   // ═══════════════════════════════════════════════════════════════════════
   _log(msg, data, level = "info") {
@@ -2258,10 +2364,22 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // WebSocket
   // ═══════════════════════════════════════════════════════════════════════
+  _getBrowserUID() {
+    const key = 'wrtc_user_id';
+    let uid = localStorage.getItem(key);
+    if (!uid) {
+      uid = 'uid_' + ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+      localStorage.setItem(key, uid);
+    }
+    return uid;
+  }
+
   _setupWebSocket() {
     const nameParam = this._myName ? `&name=${encodeURIComponent(this._myName)}` : "";
     const reconnectParam = this._isReconnecting ? "&reconnect=1" : "";
-    const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}${nameParam}${reconnectParam}`;
+    const uidParam = `&uid=${encodeURIComponent(this._getBrowserUID())}`;
+    const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}${nameParam}${reconnectParam}${uidParam}`;
     this._log("Connecting WebSocket: " + url);
     this._ws = new WebSocket(url);
     this._ws.onopen    = ()  => {
@@ -2529,7 +2647,16 @@ class WebRTCMeetingAPI {
         this._log(`${type} (SFU stub)`);
         break;
 
-      case "error": this._log("Server error: " + payload.detail, undefined, "error"); break;
+      case "error":
+        this._log("Server error: " + payload.detail, undefined, "error");
+        if (payload.code === "mau_limit_reached") {
+          setTimeout(() => { if (this._onLeave) this._onLeave('mau_limit_reached'); }, 500);
+        }
+        break;
+
+      case "mau_warning":
+        this._toastLong("⚠️ MAU limit reached — a participant was blocked. Upgrade your plan to allow more participants.");
+        break;
 
       case "mute-all":
         if (!this._micEnabled) break; // already off by participant — host mute doesn't own it
@@ -2660,6 +2787,8 @@ class WebRTCMeetingAPI {
     delete this._pendingCandidates[userId];
     delete this._analysers[userId];
     this._raisedHands.delete(userId);
+    // Auto-unpin if the pinned user left
+    if (this._pinnedTileId === `wrtc-tile-${userId}`) this._unpinTile();
     document.getElementById(`wrtc-tile-${userId}`)?.remove();
     this._updateUserCount(Object.keys(this._peerConnections).length + 1);
     this._updateGrid();
@@ -2720,6 +2849,15 @@ class WebRTCMeetingAPI {
     hand.id        = `wrtc-hand-${userId}`;
     hand.textContent = "✋";
     if (this._raisedHands.has(userId)) hand.classList.add("raised");
+
+    // Pin button + click-to-spotlight
+    this._addPinButton(tile);
+    tile.addEventListener("click", (e) => {
+      if (e.target.closest(".wrtc-pin-close")) return;
+      if (this._pinnedTileId === tile.id) { this._unpinTile(); return; }
+      if (document.getElementById("wrtc-grid").classList.contains("has-pin")) return;
+      this._pinTile(tile.id);
+    });
 
     tile.append(video, avatarWrap, badge, label, hand);
     document.getElementById("wrtc-grid").appendChild(tile);

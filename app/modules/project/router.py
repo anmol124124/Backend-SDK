@@ -40,6 +40,22 @@ async def create_project(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
+    from fastapi import HTTPException
+    from app.modules.project.mau import PLAN_PROJECT_LIMITS
+
+    limit = PLAN_PROJECT_LIMITS.get(user.plan, 1)
+    if limit is not None:
+        count_result = await db.execute(
+            select(Project).where(Project.owner_id == user.id)
+        )
+        existing = count_result.scalars().all()
+        if len(existing) >= limit:
+            plan_label = user.plan or "basic"
+            raise HTTPException(
+                status_code=403,
+                detail=f"Project limit reached ({len(existing)}/{limit} on {plan_label} plan). Upgrade to Premium to create unlimited projects.",
+            )
+
     project = await ProjectService.create_project(db, user.id, payload)
     return project
 
@@ -154,10 +170,13 @@ async def sdk_join(
     )
     pm = pm_result.scalar_one_or_none()
     if pm:
+        proj_result = await db.execute(select(Project).where(Project.id == pm.project_id))
+        proj = proj_result.scalar_one_or_none()
         return SdkJoinResponse(
             guest_token=_make_guest_token(pm.project_id),
             room_name=pm.room_name,
             name=pm.title,
+            logo_url=proj.logo_url if proj else None,
         )
     # Fall back to project room_name (legacy)
     result = await db.execute(
@@ -171,6 +190,7 @@ async def sdk_join(
         guest_token=_make_guest_token(project.id),
         room_name=project.room_name,
         name=project.name,
+        logo_url=project.logo_url,
     )
 
 
@@ -201,7 +221,7 @@ async def get_embed(
     project = await ProjectService.get_project(db, project_id, user.id)
     html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
     guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
-    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name)
+    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name, logo_url=project.logo_url)
 
 
 # ── Project analytics (authenticated) ────────────────────────────────────────
@@ -245,6 +265,19 @@ async def project_analytics(
             for m in meetings
         ],
     }
+
+
+# ── MAU stats (authenticated) ────────────────────────────────────────────────
+
+@router.get("/{project_id}/mau")
+async def project_mau_stats(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.modules.project.mau import get_mau_stats
+    await ProjectService.get_project(db, project_id, user.id)
+    return await get_mau_stats(str(project_id), user.plan)
 
 
 # ── Meeting detail (participants + duration + admin) ─────────────────────────
@@ -495,3 +528,74 @@ async def project_activity(
 
     events.sort(key=lambda e: e["timestamp"], reverse=True)
     return {"events": events[:100]}
+
+
+# ── Logo upload ───────────────────────────────────────────────────────────────
+
+_LOGOS_DIR = _PUBLIC_DIR / "logos"
+_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
+_MAX_LOGO_BYTES = 3 * 1024 * 1024  # 3 MB
+
+
+@router.post("/{project_id}/logo")
+async def upload_logo(
+    project_id: UUID,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from fastapi import HTTPException
+    import uuid as _uuid_mod
+
+    project = await ProjectService.get_project(db, project_id, user.id)
+
+    if file.content_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only PNG, JPG, GIF, WebP, or SVG images are allowed.")
+
+    content = await file.read()
+    if len(content) > _MAX_LOGO_BYTES:
+        raise HTTPException(status_code=400, detail="Logo must be under 3 MB.")
+
+    _LOGOS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove old logo file if one exists
+    if project.logo_url:
+        old_filename = project.logo_url.split("/")[-1]
+        old_path = _LOGOS_DIR / old_filename
+        if old_path.exists():
+            old_path.unlink()
+
+    ext = Path(file.filename).suffix if file.filename else ".png"
+    if not ext or ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+        ext = ".png"
+    filename = f"{project_id}{ext}"
+    file_path = _LOGOS_DIR / filename
+    file_path.write_bytes(content)
+
+    from app.core.config import settings as _settings
+    logo_url = f"{_settings.BACKEND_PUBLIC_URL}/public/logos/{filename}"
+
+    project.logo_url = logo_url
+    await db.commit()
+    await db.refresh(project)
+
+    return {"logo_url": logo_url}
+
+
+@router.delete("/{project_id}/logo")
+async def delete_logo(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await ProjectService.get_project(db, project_id, user.id)
+
+    if project.logo_url:
+        old_filename = project.logo_url.split("/")[-1]
+        old_path = _LOGOS_DIR / old_filename
+        if old_path.exists():
+            old_path.unlink()
+        project.logo_url = None
+        await db.commit()
+
+    return {"ok": True}

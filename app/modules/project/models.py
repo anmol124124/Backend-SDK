@@ -17,6 +17,7 @@ class Project(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     room_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     embed_token: Mapped[str] = mapped_column(Text, nullable=False)
+    logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -89,6 +90,23 @@ class ProjectDomain(Base):
     )
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class ProjectMAU(Base):
+    """Monthly Active Users per project — one row per unique browser UUID per month."""
+    __tablename__ = "project_mau"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)   # browser-generated UUID
+    month: Mapped[str] = mapped_column(String(7), nullable=False)        # "YYYY-MM"
+    first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,

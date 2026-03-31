@@ -23,12 +23,14 @@ class EmbedResponse(BaseModel):
     guest_html: str
     host_token: str
     room_name: str
+    logo_url: str | None = None
 
 
 class SdkJoinResponse(BaseModel):
     guest_token: str
     room_name: str
     name: str
+    logo_url: str | None = None
 
 
 class ProjectMeetingResponse(BaseModel):

@@ -456,12 +456,36 @@ async def signaling_endpoint(
     # tabs/devices without overwriting their own slot in the connection manager
     user_id = base_user_id + "_" + str(uuid.uuid4())[:8]
 
-    # ── Step 4: load meeting settings (public meetings only) ──────────────────
+    # ── Step 3: load token role (needed for MAU and meeting settings) ─────────
     token_type   = _get_token_type(token)
     token_role   = _get_token_role(token)
     is_guest     = token_type == "public_guest" or (token_type == "access" and token_role == "guest")
     is_embed_host = token_type == "access" and token_role == "host"
     is_public    = token_type in ("public_guest", "public_host")
+
+    # ── Step 4: MAU enforcement (guests only, unique per connection) ──────────
+    if not is_embed_host and token_role != "host":
+        from app.modules.project.mau import check_and_record_mau, get_project_and_plan
+        project_id, owner_plan = await get_project_and_plan(meeting_id)
+        if project_id:
+            allowed, reason = await check_and_record_mau(project_id, user_id, owner_plan)
+            if not allowed:
+                await websocket.accept()
+                await websocket.send_json({
+                    "type": "error",
+                    "from": "server",
+                    "payload": {"detail": reason, "code": "mau_limit_reached"},
+                })
+                await websocket.close(code=4429, reason="MAU limit reached")
+                # Warn the host that someone was blocked due to MAU limit
+                host_id = manager.get_host(meeting_id)
+                if host_id:
+                    await manager.send_personal(meeting_id, host_id, {
+                        "type": "mau_warning",
+                        "from": "server",
+                        "payload": {"message": "A participant was blocked — your monthly active user limit has been reached. Upgrade your plan to allow more participants."},
+                    })
+                return
 
     meeting_settings: dict = {}
     if is_public:
