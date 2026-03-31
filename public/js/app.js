@@ -28,7 +28,12 @@ class WebRTCMeetingAPI {
     this._guestToken = guestToken;
     this._shareUrl   = shareUrl;
     this._embedToken = embedToken;
-    this._logoUrl    = logoUrl || "";
+    // Resolve relative logo paths against the backend origin (from script tag)
+    if (logoUrl && logoUrl.startsWith('/')) {
+      this._logoUrl = this._httpBase + logoUrl;
+    } else {
+      this._logoUrl = logoUrl || "";
+    }
     this.parentNode  = parentNode;
     this._onLeave    = onLeave;
 

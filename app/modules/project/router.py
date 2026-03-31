@@ -172,13 +172,11 @@ async def sdk_join(
     if pm:
         proj_result = await db.execute(select(Project).where(Project.id == pm.project_id))
         proj = proj_result.scalar_one_or_none()
-        raw_logo = proj.logo_url if proj else None
-        logo_url = f"{settings.BACKEND_PUBLIC_URL.rstrip('/')}{raw_logo}" if raw_logo else None
         return SdkJoinResponse(
             guest_token=_make_guest_token(pm.project_id),
             room_name=pm.room_name,
             name=pm.title,
-            logo_url=logo_url,
+            logo_url=proj.logo_url if proj else None,
         )
     # Fall back to project room_name (legacy)
     result = await db.execute(
@@ -188,13 +186,11 @@ async def sdk_join(
     if not project:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Meeting not found")
-    raw_logo = project.logo_url
-    logo_url = f"{settings.BACKEND_PUBLIC_URL.rstrip('/')}{raw_logo}" if raw_logo else None
     return SdkJoinResponse(
         guest_token=_make_guest_token(project.id),
         room_name=project.room_name,
         name=project.name,
-        logo_url=logo_url,
+        logo_url=project.logo_url,
     )
 
 
