@@ -172,11 +172,13 @@ async def sdk_join(
     if pm:
         proj_result = await db.execute(select(Project).where(Project.id == pm.project_id))
         proj = proj_result.scalar_one_or_none()
+        raw_logo = proj.logo_url if proj else None
+        logo_url = f"{settings.BACKEND_PUBLIC_URL.rstrip('/')}{raw_logo}" if raw_logo else None
         return SdkJoinResponse(
             guest_token=_make_guest_token(pm.project_id),
             room_name=pm.room_name,
             name=pm.title,
-            logo_url=proj.logo_url if proj else None,
+            logo_url=logo_url,
         )
     # Fall back to project room_name (legacy)
     result = await db.execute(
@@ -186,11 +188,13 @@ async def sdk_join(
     if not project:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Meeting not found")
+    raw_logo = project.logo_url
+    logo_url = f"{settings.BACKEND_PUBLIC_URL.rstrip('/')}{raw_logo}" if raw_logo else None
     return SdkJoinResponse(
         guest_token=_make_guest_token(project.id),
         room_name=project.room_name,
         name=project.name,
-        logo_url=project.logo_url,
+        logo_url=logo_url,
     )
 
 
@@ -221,7 +225,8 @@ async def get_embed(
     project = await ProjectService.get_project(db, project_id, user.id)
     html = ProjectService.generate_embed_html(project, settings.BACKEND_PUBLIC_URL)
     guest_html = ProjectService.generate_guest_html(project, settings.BACKEND_PUBLIC_URL)
-    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name, logo_url=project.logo_url)
+    logo_url = f"{settings.BACKEND_PUBLIC_URL.rstrip('/')}{project.logo_url}" if project.logo_url else None
+    return EmbedResponse(html=html, guest_html=guest_html, host_token=project.embed_token, room_name=project.room_name, logo_url=logo_url)
 
 
 # ── Project analytics (authenticated) ────────────────────────────────────────
@@ -560,7 +565,7 @@ async def upload_logo(
 
     # Remove old logo file if one exists
     if project.logo_url:
-        old_filename = project.logo_url.split("/")[-1]
+        old_filename = project.logo_url.rstrip("/").split("/")[-1]
         old_path = _LOGOS_DIR / old_filename
         if old_path.exists():
             old_path.unlink()
@@ -573,12 +578,12 @@ async def upload_logo(
     file_path.write_bytes(content)
 
     from app.core.config import settings as _settings
-    logo_url = f"{_settings.BACKEND_PUBLIC_URL}/public/logos/{filename}"
-
-    project.logo_url = logo_url
+    relative_path = f"/public/logos/{filename}"
+    project.logo_url = relative_path
     await db.commit()
     await db.refresh(project)
 
+    logo_url = f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{relative_path}"
     return {"logo_url": logo_url}
 
 
@@ -591,7 +596,7 @@ async def delete_logo(
     project = await ProjectService.get_project(db, project_id, user.id)
 
     if project.logo_url:
-        old_filename = project.logo_url.split("/")[-1]
+        old_filename = project.logo_url.rstrip("/").split("/")[-1]
         old_path = _LOGOS_DIR / old_filename
         if old_path.exists():
             old_path.unlink()

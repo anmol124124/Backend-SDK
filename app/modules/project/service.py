@@ -198,7 +198,7 @@ class ProjectService:
           new WebRTCMeetingAPI({{
             embedToken: "{project.embed_token}",
             parentNode: document.getElementById('meeting-container'),
-            onLeave: launchApp,{f'{chr(10)}            logoUrl: "{project.logo_url}",' if project.logo_url else ''}
+            onLeave: launchApp,{f'{chr(10)}            logoUrl: "{backend_url}{project.logo_url}",' if project.logo_url else ''}
           }});
         }}
         launchApp();
