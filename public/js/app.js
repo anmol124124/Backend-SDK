@@ -362,16 +362,29 @@ class WebRTCMeetingAPI {
           stream.getVideoTracks().forEach(t => { t.enabled = false; });
         }
       })
-      .catch(() => {
-        // Camera unavailable — fallback to audio-only
-        this._camEnabled = false;
-        return navigator.mediaDevices.getUserMedia({ audio: true })
-          .then(audioStream => {
-            this._localStream = audioStream;
-            this._setupAudioAnalyser("local", audioStream);
-          })
-          .catch(() => { this._localStream = null; this._micEnabled = false; });
-      })
+      .catch(() => navigator.mediaDevices.getUserMedia({ video: true })
+        // video-only fallback (mic was denied/unavailable)
+        .then(stream => {
+          this._localStream = stream;
+          this._setupAudioAnalyser("local", stream);
+          this._micEnabled = false;
+          const savedCam = sessionStorage.getItem('wrtc_cam_' + this.roomName);
+          if (savedCam === '0') {
+            this._camEnabled = false;
+            stream.getVideoTracks().forEach(t => { t.enabled = false; });
+          }
+        })
+        .catch(() => {
+          // audio-only fallback (camera was denied/unavailable)
+          this._camEnabled = false;
+          return navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(audioStream => {
+              this._localStream = audioStream;
+              this._setupAudioAnalyser("local", audioStream);
+            })
+            .catch(() => { this._localStream = null; this._micEnabled = false; });
+        })
+      )
       .finally(() => {
         sessionStorage.setItem('wrtc_name_' + this.roomName, name);
         this._setupWebSocket();
@@ -563,6 +576,22 @@ class WebRTCMeetingAPI {
 
     // Lobby mic/cam toggles (use same state vars)
     document.getElementById("wrtc-lobby-mic").addEventListener("click", () => {
+      const hasAudio = (this._localStream?.getAudioTracks().length ?? 0) > 0;
+      if (!this._micEnabled && !hasAudio) {
+        // No audio track yet — ask for mic permission on-demand
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => {
+            const track = stream.getAudioTracks()[0];
+            if (!this._localStream) { this._localStream = stream; }
+            else { this._localStream.addTrack(track); }
+            this._micEnabled = true;
+            document.getElementById("wrtc-lobby-mic").classList.remove("muted");
+            document.getElementById("wrtc-lobby-mic-on").style.display  = "";
+            document.getElementById("wrtc-lobby-mic-off").style.display = "none";
+          })
+          .catch(() => { /* permission denied — stay mic-off */ });
+        return;
+      }
       this._micEnabled = !this._micEnabled;
       this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
       document.getElementById("wrtc-lobby-mic").classList.toggle("muted", !this._micEnabled);
@@ -619,17 +648,26 @@ class WebRTCMeetingAPI {
     try {
       this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       document.getElementById("wrtc-lobby-video").srcObject = this._localStream;
-    } catch (err) {
-      this._log("Camera unavailable: " + err.message, undefined, "warn");
-      document.getElementById("wrtc-lobby-cam-off").style.display = "flex";
-      document.getElementById("wrtc-lobby-video").style.display   = "none";
-      this._camEnabled = false;
-      // Fallback: audio-only so the participant can still speak without a camera
+    } catch (_) {
+      // Try video-only (mic may be denied/unavailable)
       try {
-        this._localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (_) {
-        this._localStream = null;
-        this._micEnabled  = false;
+        this._localStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        document.getElementById("wrtc-lobby-video").srcObject = this._localStream;
+        this._micEnabled = false;
+        document.getElementById("wrtc-lobby-mic").classList.add("muted");
+        document.getElementById("wrtc-lobby-mic-on").style.display  = "none";
+        document.getElementById("wrtc-lobby-mic-off").style.display = "";
+      } catch (_2) {
+        // Camera also unavailable — try audio-only
+        document.getElementById("wrtc-lobby-cam-off").style.display = "flex";
+        document.getElementById("wrtc-lobby-video").style.display   = "none";
+        this._camEnabled = false;
+        try {
+          this._localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (_3) {
+          this._localStream = null;
+          this._micEnabled  = false;
+        }
       }
     }
   }
@@ -1584,6 +1622,38 @@ class WebRTCMeetingAPI {
     }
     // Clear host-muted flag when user manually unmutes themselves
     if (!this._micEnabled && this._hostMutedMic) this._hostMutedMic = false;
+
+    // No audio track at all — request mic permission on first enable
+    if (!this._micEnabled && !(this._localStream?.getAudioTracks().length)) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(async micStream => {
+          const track = micStream.getAudioTracks()[0];
+          if (!this._localStream) { this._localStream = micStream; }
+          else { this._localStream.addTrack(track); }
+          // Add track to all active peer connections
+          for (const [peerId, pc] of Object.entries(this._peerConnections)) {
+            const audioSender = pc.getSenders().find(s => s.track?.kind === "audio");
+            if (audioSender) {
+              await audioSender.replaceTrack(track);
+            } else {
+              pc.addTrack(track, this._localStream);
+              await this._initiateOffer(peerId);
+            }
+          }
+          this._micEnabled = true;
+          sessionStorage.setItem('wrtc_mic_' + this.roomName, '1');
+          document.getElementById("wrtc-btn-mic").classList.remove("muted");
+          document.getElementById("wrtc-ico-mic").style.display     = "";
+          document.getElementById("wrtc-ico-mic-off").style.display = "none";
+          this._setupAudioAnalyser("local", this._localStream);
+          this._toast("Microphone on");
+        })
+        .catch(err => {
+          this._toast(err.name === "NotAllowedError" ? "Microphone permission denied" : "No microphone available");
+        });
+      return;
+    }
+
     this._micEnabled = !this._micEnabled;
     this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
     sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
@@ -2626,6 +2696,10 @@ class WebRTCMeetingAPI {
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
       this._log(`PC [${remoteUserId}]: ${s}`, undefined, s === "connected" ? "ok" : s === "failed" ? "error" : "info");
+      // Ensure the grid is visible once a peer connects — critical for participants
+      // who join with no tracks (camera/mic denied) since ontrack never fires for them,
+      // meaning _updateGrid would otherwise never be called with remoteCount > 0.
+      if (s === "connected") this._updateGrid();
       if (s === "failed" || s === "disconnected") this._cleanupPeer(remoteUserId);
     };
 
@@ -2654,12 +2728,19 @@ class WebRTCMeetingAPI {
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
-        // Re-announce our name — the initial name message sent on WS open is discarded
-        // during the knock-wait period, so existing participants wouldn't know it.
+        // Re-announce our name and camera state — messages sent in onopen are consumed
+        // by the knock-wait drain loop and never reach the main relay, so we re-send
+        // them here after admission when the main message loop is active.
         this._sendWS({ type: "name", payload: { name: this._myName } });
+        if (!this._camEnabled) {
+          this._sendWS({ type: "cam-state", payload: { enabled: false } });
+        }
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
+        // Pre-create tiles for existing participants so they appear immediately in the grid
+        // even if they have no camera/mic tracks (ontrack would never fire for them).
+        payload.users.forEach(uid => this._ensureRemoteTile(uid));
         this._updateGrid();  // set initial solo/grid state
         break;
 
@@ -2667,6 +2748,9 @@ class WebRTCMeetingAPI {
         if (payload.name) this._peerNames[payload.user_id] = payload.name;
         this._participants[payload.user_id] = this._displayName(payload.user_id);
         this._renderParticipants();
+        // Pre-create the tile immediately so participant is visible in the grid
+        // even if they join with no camera/mic tracks (ontrack would never fire).
+        this._ensureRemoteTile(payload.user_id);
         // Tell the new joiner our name and camera state
         this._sendWS({ type: "name", payload: { name: this._myName } });
         if (!this._camEnabled) {
@@ -3040,9 +3124,15 @@ class WebRTCMeetingAPI {
     }
   }
 
-  _addRemoteVideo(userId, stream) {
-    const existingVideo = document.getElementById(`wrtc-vid-${userId}`);
-    if (existingVideo) { existingVideo.srcObject = stream; return; }
+  // Creates the tile DOM for a remote participant if it doesn't exist yet.
+  // Avatar is shown by default — it is hidden only when a live video track arrives
+  // or when cam-state:true is received. This ensures participants with no tracks
+  // (camera permanently denied) are always visible as an avatar tile.
+  // Safe to call multiple times — idempotent.
+  _ensureRemoteTile(userId) {
+    if (document.getElementById(`wrtc-tile-${userId}`)) return;
+    const grid = document.getElementById("wrtc-grid");
+    if (!grid) return;
 
     const tile = document.createElement("div");
     tile.id        = `wrtc-tile-${userId}`;
@@ -3052,9 +3142,7 @@ class WebRTCMeetingAPI {
     video.id          = `wrtc-vid-${userId}`;
     video.autoplay    = true;
     video.playsInline = true;
-    video.srcObject   = stream;
 
-    // Avatar — hidden by default (camera is on). Shown only when video track is muted/disabled.
     const avatarWrap = document.createElement("div");
     avatarWrap.className = "wrtc-tile-avatar";
     avatarWrap.id        = `wrtc-avatar-${userId}`;
@@ -3063,19 +3151,9 @@ class WebRTCMeetingAPI {
     avatar.textContent      = this._getInitials(this._displayName(userId));
     avatarWrap.appendChild(avatar);
 
-    // Apply stored cam state immediately (cam-state message may have arrived before tile was created)
-    if (this._camStates[userId] === false) {
-      avatarWrap.classList.add("visible");
-    }
-    // Keep avatar in sync via track mute events, but cam-state takes precedence.
-    // "unmute" can fire when the remote sends black frames (track.enabled=false on sender side),
-    // so only remove the avatar if cam-state explicitly says the camera is on.
-    stream.getVideoTracks().forEach(track => {
-      track.addEventListener("mute",   () => avatarWrap.classList.add("visible"));
-      track.addEventListener("unmute", () => {
-        if (this._camStates[userId] !== false) avatarWrap.classList.remove("visible");
-      });
-    });
+    // Show avatar by default. It is hidden when we know camera is on
+    // (cam-state:true) or when a live video track is wired up in _addRemoteVideo.
+    avatarWrap.classList.add("visible");
 
     const label = document.createElement("div");
     label.className   = "wrtc-tile-label";
@@ -3091,16 +3169,43 @@ class WebRTCMeetingAPI {
     hand.textContent = "✋";
     if (this._raisedHands.has(userId)) hand.classList.add("raised");
 
-    // Click-to-focus
     tile.addEventListener("click", () => {
-      if (this._focusTileId === tile.id) return; // already main
+      if (this._focusTileId === tile.id) return;
       if (this._focusTileId) { this._switchFocusTile(tile.id); return; }
       this._enterFocusMode(tile.id);
     });
 
     tile.append(video, avatarWrap, badge, label, hand);
-    document.getElementById("wrtc-grid").appendChild(tile);
+    grid.appendChild(tile);
     this._updateGrid();
+  }
+
+  // Called when a remote track arrives. Ensures the tile exists, then wires up the stream.
+  _addRemoteVideo(userId, stream) {
+    this._ensureRemoteTile(userId);
+
+    const videoEl    = document.getElementById(`wrtc-vid-${userId}`);
+    const avatarWrap = document.getElementById(`wrtc-avatar-${userId}`);
+    if (videoEl) videoEl.srcObject = stream;
+
+    if (avatarWrap) {
+      // A live video track is arriving — hide avatar unless cam-state says camera is off.
+      if (stream.getVideoTracks().length > 0 && this._camStates[userId] !== false) {
+        avatarWrap.classList.remove("visible");
+      }
+      // If cam-state explicitly says camera is off, keep avatar visible.
+      if (this._camStates[userId] === false) {
+        avatarWrap.classList.add("visible");
+      }
+      // Track mute events: "unmute" fires when black frames arrive (track.enabled=false
+      // on sender), so only hide avatar if cam-state confirms camera is actually on.
+      stream.getVideoTracks().forEach(track => {
+        track.addEventListener("mute",   () => avatarWrap.classList.add("visible"));
+        track.addEventListener("unmute", () => {
+          if (this._camStates[userId] !== false) avatarWrap.classList.remove("visible");
+        });
+      });
+    }
   }
 
   _colorFromId(id) {
