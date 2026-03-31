@@ -48,7 +48,7 @@ class WebRTCMeetingAPI {
     this._camEnabled  = true;
     this._isSharing     = false;
     this._shareStream   = null;
-    this._pinnedTileId  = null;
+    this._focusTileId   = null;
 
     // Recording
     this._isRecording   = false;
@@ -812,27 +812,48 @@ class WebRTCMeetingAPI {
       @keyframes wrtc-bounce{from{transform:translateY(0)}to{transform:translateY(-4px)}}
       .wrtc-tile-hand.raised{display:block}
 
-      /* ── PIN / SPOTLIGHT ── */
-      .wrtc-tile.wrtc-pinned{
-        position:absolute;top:0;left:0;right:0;bottom:0;
+      /* ── FOCUS MODE ── */
+      .wrtc-focus-wrap{
+        flex:1;display:none;flex-direction:row;gap:6px;padding:6px;overflow:hidden;
+      }
+      .wrtc-focus-main{
+        flex:1;position:relative;border-radius:16px;overflow:hidden;min-width:0;
+      }
+      .wrtc-focus-main>.wrtc-tile{
         width:100% !important;height:100% !important;
-        z-index:15;border-radius:14px;cursor:default;
+        border-radius:16px;cursor:default;
       }
-      .wrtc-pin-close{
-        position:absolute;top:10px;left:50%;z-index:20;
-        transform:translateX(-50%);
-        width:32px;height:32px;border-radius:50%;
+      .wrtc-focus-exit{
+        position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:20;
         background:rgba(0,0,0,.65);backdrop-filter:blur(6px);
-        border:1px solid rgba(255,255,255,.22);
-        display:none;align-items:center;justify-content:center;
-        cursor:pointer;color:#fff;font-size:15px;line-height:1;
-        transition:background .15s,transform .15s;
+        border:1px solid rgba(255,255,255,.22);color:#fff;
+        font-size:12px;font-weight:600;padding:5px 16px;border-radius:20px;
+        cursor:pointer;display:flex;align-items:center;gap:6px;
+        transition:background .15s;white-space:nowrap;letter-spacing:.2px;
       }
-      .wrtc-pin-close:hover{ background:rgba(220,50,50,.8);transform:translateX(-50%) scale(1.12); }
-      .wrtc-tile.wrtc-pinned .wrtc-pin-close{ display:flex; }
-      .wrtc-grid.has-pin .wrtc-tile:not(.wrtc-pinned){ visibility:hidden; }
-      .wrtc-tile{ cursor:pointer; }
-      .wrtc-tile.wrtc-pinned{ cursor:default; }
+      .wrtc-focus-exit:hover{background:rgba(200,40,40,.85);}
+      .wrtc-focus-panel{
+        width:28%;display:flex;flex-direction:column;gap:6px;overflow:hidden;flex-shrink:0;
+      }
+      .wrtc-focus-tiles{
+        display:flex;flex-direction:column;gap:6px;flex:1;overflow:hidden;
+      }
+      .wrtc-focus-tiles>.wrtc-tile{
+        flex:1;min-height:0;cursor:pointer;border-radius:12px;
+        transition:box-shadow .2s,transform .15s;
+      }
+      .wrtc-focus-tiles>.wrtc-tile:hover{
+        transform:scale(1.025);
+        box-shadow:0 4px 24px rgba(108,99,255,.45);
+      }
+      .wrtc-focus-more{
+        background:rgba(108,99,255,.12);border:1px solid rgba(108,99,255,.3);
+        border-radius:12px;color:#a09bff;font-size:13px;font-weight:600;
+        text-align:center;padding:12px 8px;cursor:pointer;flex-shrink:0;
+        transition:background .15s;
+      }
+      .wrtc-focus-more:hover{background:rgba(108,99,255,.22);}
+      .wrtc-tile{cursor:pointer;}
 
       /* ── PRESENTATION MODE ── */
       .wrtc-stage.presenting .wrtc-grid{
@@ -1190,6 +1211,16 @@ class WebRTCMeetingAPI {
             <div class="wrtc-tile-label" id="wrtc-pip-label"></div>
           </div>
         </div>
+        <!-- Focus mode layout — shown instead of grid when a tile is focused -->
+        <div class="wrtc-focus-wrap" id="wrtc-focus-wrap" style="display:none">
+          <div class="wrtc-focus-main" id="wrtc-focus-main">
+            <div class="wrtc-focus-exit" id="wrtc-focus-exit">&#x2715; Exit focus</div>
+          </div>
+          <div class="wrtc-focus-panel" id="wrtc-focus-panel">
+            <div class="wrtc-focus-tiles" id="wrtc-focus-tiles"></div>
+            <div class="wrtc-focus-more" id="wrtc-focus-more" style="display:none"></div>
+          </div>
+        </div>
         <!-- Waiting overlay — full-screen, shown when alone in room -->
         <div class="wrtc-waiting" id="wrtc-waiting">
           <div class="wrtc-waiting-ring"></div>
@@ -1379,7 +1410,8 @@ class WebRTCMeetingAPI {
       const logo = document.createElement("img");
       logo.className = "wrtc-logo";
       logo.src = this._logoUrl;
-      logo.alt = "Brand logo";
+      logo.alt = "";
+      logo.onerror = () => { logo.style.display = "none"; };
       this.parentNode.appendChild(logo);
     }
 
@@ -1394,15 +1426,15 @@ class WebRTCMeetingAPI {
       if (e.target.tagName === "VIDEO") e.preventDefault();
     });
 
-    // Local tile — pin on click
+    // Local tile — focus on click
     const localTile = document.getElementById("wrtc-local-tile");
-    this._addPinButton(localTile);
     localTile.addEventListener("click", () => {
-      if (this._pinnedTileId === "wrtc-local-tile") { this._unpinTile(); return; }
-      if (document.getElementById("wrtc-grid").classList.contains("has-pin")) return;
-      // Only pin when others are present
-      if (Object.keys(this._peerConnections).length > 0) this._pinTile("wrtc-local-tile");
+      if (this._focusTileId === "wrtc-local-tile") return; // already main
+      if (this._focusTileId) { this._switchFocusTile("wrtc-local-tile"); return; }
+      if (Object.keys(this._peerConnections).length > 0) this._enterFocusMode("wrtc-local-tile");
     });
+    document.getElementById("wrtc-focus-exit").addEventListener("click", () => this._exitFocusMode());
+    document.getElementById("wrtc-focus-more").addEventListener("click", () => this._exitFocusMode());
 
     document.getElementById("wrtc-btn-leave").addEventListener("click", () => this.hangup());
     document.getElementById("wrtc-btn-invite").addEventListener("click", () => this._showInvite());
@@ -1554,7 +1586,7 @@ class WebRTCMeetingAPI {
       try {
         this._shareStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         this._isSharing   = true;
-        this._unpinTile(); // clear any pin before entering presentation mode
+        this._exitFocusMode(); // clear focus mode before entering presentation mode
         sessionStorage.setItem('wrtc_sharing_' + this.roomName, '1');
         const screenTrack = this._shareStream.getVideoTracks()[0];
         screenTrack.onended = () => { if (this._isSharing) this._toggleScreenShare(); };
@@ -2258,6 +2290,7 @@ class WebRTCMeetingAPI {
 
   _updateGrid() {
     if (this._isLeaving) return;
+    if (this._focusTileId) { this._updateFocusPanel(); return; }
     const grid      = document.getElementById("wrtc-grid");
     const waiting   = document.getElementById("wrtc-waiting");
     const localTile = document.getElementById("wrtc-local-tile");
@@ -2303,42 +2336,111 @@ class WebRTCMeetingAPI {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // PIN / SPOTLIGHT
+  // FOCUS MODE
   // ═══════════════════════════════════════════════════════════════════════
-  _pinTile(tileId) {
-    // Don't pin during screen-share presentation
+  _enterFocusMode(tileId) {
     if (this._isSharing || document.getElementById("wrtc-stage")?.classList.contains("presenting")) return;
-    const grid = document.getElementById("wrtc-grid");
-    if (!grid) return;
-    // Unpin any existing pin first
-    this._unpinTile();
+    if (Object.keys(this._peerConnections).length === 0) return;
+
+    this._focusTileId = tileId;
+    const grid      = document.getElementById("wrtc-grid");
+    const focusWrap = document.getElementById("wrtc-focus-wrap");
+    const focusMain = document.getElementById("wrtc-focus-main");
+    if (!grid || !focusWrap || !focusMain) return;
+
+    // Move focused tile into main panel
     const tile = document.getElementById(tileId);
     if (!tile) return;
-    this._pinnedTileId = tileId;
-    tile.classList.add("wrtc-pinned");
-    grid.classList.add("has-pin");
+    focusMain.appendChild(tile);
+
+    // Move all remaining grid tiles into the panel
+    this._updateFocusPanel();
+
+    grid.style.display      = "none";
+    focusWrap.style.display = "flex";
   }
 
-  _unpinTile() {
-    const grid = document.getElementById("wrtc-grid");
-    if (!grid) return;
-    if (this._pinnedTileId) {
-      document.getElementById(this._pinnedTileId)?.classList.remove("wrtc-pinned");
-      this._pinnedTileId = null;
+  _exitFocusMode() {
+    if (!this._focusTileId) return;
+    const grid       = document.getElementById("wrtc-grid");
+    const focusWrap  = document.getElementById("wrtc-focus-wrap");
+    const focusMain  = document.getElementById("wrtc-focus-main");
+    const focusTiles = document.getElementById("wrtc-focus-tiles");
+    if (!grid || !focusWrap) return;
+
+    // Move main tile back to grid
+    const mainTile = focusMain?.querySelector(".wrtc-tile");
+    if (mainTile) {
+      mainTile.style.cssText = "";
+      if (mainTile.id === "wrtc-local-tile") grid.prepend(mainTile);
+      else grid.appendChild(mainTile);
     }
-    grid.classList.remove("has-pin");
+
+    // Move all panel tiles back to grid (including hidden overflow ones)
+    if (focusTiles) {
+      [...focusTiles.querySelectorAll(".wrtc-tile")].forEach(t => {
+        t.style.display = "";
+        grid.appendChild(t);
+      });
+    }
+
+    // Restore local tile to front
+    const localTile = document.getElementById("wrtc-local-tile");
+    if (localTile?.parentElement === grid) grid.prepend(localTile);
+
+    this._focusTileId       = null;
+    focusWrap.style.display = "none";
+    grid.style.display      = "";
+    this._updateGrid();
   }
 
-  _addPinButton(tile) {
-    const btn = document.createElement("div");
-    btn.className = "wrtc-pin-close";
-    btn.innerHTML = "&#x2715;";
-    btn.title = "Exit spotlight";
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this._unpinTile();
-    });
-    tile.appendChild(btn);
+  _switchFocusTile(tileId) {
+    if (!this._focusTileId) return;
+    const focusMain  = document.getElementById("wrtc-focus-main");
+    const focusTiles = document.getElementById("wrtc-focus-tiles");
+    if (!focusMain || !focusTiles) return;
+
+    const newMain = document.getElementById(tileId);
+    const oldMain = focusMain.querySelector(".wrtc-tile");
+    if (!newMain || !oldMain || newMain === oldMain) return;
+
+    // Swap: old main goes to panel where new main was, new main goes to focusMain
+    focusTiles.insertBefore(oldMain, newMain);
+    focusMain.appendChild(newMain);
+    this._focusTileId = tileId;
+    this._updateFocusPanel();
+  }
+
+  _updateFocusPanel() {
+    const focusMain  = document.getElementById("wrtc-focus-main");
+    const focusTiles = document.getElementById("wrtc-focus-tiles");
+    const focusMore  = document.getElementById("wrtc-focus-more");
+    const grid       = document.getElementById("wrtc-grid");
+    if (!focusMain || !focusTiles || !focusMore) return;
+
+    const focusedId = focusMain.querySelector(".wrtc-tile")?.id;
+
+    // Collect all non-focused tiles from grid + existing panel
+    const allOther = [
+      ...document.querySelectorAll("#wrtc-grid .wrtc-tile"),
+      ...document.querySelectorAll("#wrtc-focus-tiles .wrtc-tile"),
+    ].filter(t => t.id !== focusedId);
+
+    // Move them all into the panel
+    allOther.forEach(t => focusTiles.appendChild(t));
+
+    // Show max 4 tiles, hide the rest
+    const MAX_PANEL = 4;
+    const panelTiles = [...focusTiles.querySelectorAll(".wrtc-tile")];
+    panelTiles.forEach((t, i) => { t.style.display = i < MAX_PANEL ? "" : "none"; });
+
+    const overflow = Math.max(0, panelTiles.length - MAX_PANEL);
+    if (overflow > 0) {
+      focusMore.textContent  = `+${overflow} more`;
+      focusMore.style.display = "";
+    } else {
+      focusMore.style.display = "none";
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -2792,9 +2894,26 @@ class WebRTCMeetingAPI {
     delete this._pendingCandidates[userId];
     delete this._analysers[userId];
     this._raisedHands.delete(userId);
-    // Auto-unpin if the pinned user left
-    if (this._pinnedTileId === `wrtc-tile-${userId}`) this._unpinTile();
-    document.getElementById(`wrtc-tile-${userId}`)?.remove();
+    // Handle focus mode when a user leaves
+    const leavingTileId = `wrtc-tile-${userId}`;
+    if (this._focusTileId === leavingTileId) {
+      // Focused tile is leaving — exit focus cleanly without touching the tile
+      this._focusTileId = null; // clear first so _updateGrid runs in grid mode
+      const grid       = document.getElementById("wrtc-grid");
+      const focusTiles = document.getElementById("wrtc-focus-tiles");
+      const focusWrap  = document.getElementById("wrtc-focus-wrap");
+      if (focusTiles && grid) {
+        [...focusTiles.querySelectorAll(".wrtc-tile")].forEach(t => {
+          t.style.display = "";
+          grid.appendChild(t);
+        });
+      }
+      const localTile = document.getElementById("wrtc-local-tile");
+      if (localTile?.parentElement === grid) grid.prepend(localTile);
+      if (focusWrap) focusWrap.style.display = "none";
+      if (grid) grid.style.display = "";
+    }
+    document.getElementById(leavingTileId)?.remove();
     this._updateUserCount(Object.keys(this._peerConnections).length + 1);
     this._updateGrid();
   }
@@ -2855,13 +2974,11 @@ class WebRTCMeetingAPI {
     hand.textContent = "✋";
     if (this._raisedHands.has(userId)) hand.classList.add("raised");
 
-    // Pin button + click-to-spotlight
-    this._addPinButton(tile);
-    tile.addEventListener("click", (e) => {
-      if (e.target.closest(".wrtc-pin-close")) return;
-      if (this._pinnedTileId === tile.id) { this._unpinTile(); return; }
-      if (document.getElementById("wrtc-grid").classList.contains("has-pin")) return;
-      this._pinTile(tile.id);
+    // Click-to-focus
+    tile.addEventListener("click", () => {
+      if (this._focusTileId === tile.id) return; // already main
+      if (this._focusTileId) { this._switchFocusTile(tile.id); return; }
+      this._enterFocusMode(tile.id);
     });
 
     tile.append(video, avatarWrap, badge, label, hand);
