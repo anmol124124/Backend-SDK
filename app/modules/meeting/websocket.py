@@ -198,7 +198,7 @@ def _get_token_role(token: str) -> str | None:
     except JWTError:
         return None
 
-_ROOM_TYPES  = {"chat", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all", "cam-state"}
+_ROOM_TYPES  = {"chat", "chat-private", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all", "cam-state"}
 _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 
@@ -750,6 +750,15 @@ async def signaling_endpoint(
         },
     )
 
+    # ── Send public chat history to new joiner ────────────────────────────────
+    chat_history = manager.get_public_chat(room_id)
+    if chat_history:
+        await manager.send_personal(room_id, user_id, {
+            "type": "chat:history",
+            "from": "server",
+            "payload": {"messages": chat_history},
+        })
+
     # ── Step 7: notify others ─────────────────────────────────────────────────
     await manager.broadcast_to_room(
         room_id,
@@ -907,6 +916,25 @@ async def signaling_endpoint(
                 await _handle_sfu(msg_type, payload, room_id, user_id, websocket)
                 continue
 
+            # ── Private chat routing ───────────────────────────────────────────
+            if msg_type == "chat-private":
+                if manager.is_host(room_id, user_id):
+                    # Host → specific guest (payload must include 'to' with guest session ID)
+                    to_user = payload.get("to")
+                    if to_user and manager.is_connected(room_id, to_user):
+                        fwd_payload = {k: v for k, v in payload.items() if k != "to"}
+                        await manager.send_personal(room_id, to_user, {
+                            "type": "chat-private", "from": user_id, "payload": fwd_payload,
+                        })
+                else:
+                    # Guest → host
+                    host_id = manager.get_host(room_id)
+                    if host_id and manager.is_connected(room_id, host_id):
+                        await manager.send_personal(room_id, host_id, {
+                            "type": "chat-private", "from": user_id, "payload": payload,
+                        })
+                continue
+
             # ── P2P relay (offer / answer / ice-candidate) ─────────────────────
             outbound = {"type": msg_type, "from": user_id, "payload": payload}
             if target_id:
@@ -920,6 +948,9 @@ async def signaling_endpoint(
                     await manager.send_personal(room_id, target_id, outbound)
             else:
                 await manager.broadcast_to_room(room_id, outbound, exclude_user_id=user_id)
+                # Persist public chat for late joiners
+                if msg_type == "chat":
+                    manager.add_public_message(room_id, {"from": user_id, "payload": payload})
 
     except Exception:
         logger.exception("Unexpected error  meeting=%s  user=%s", room_id, user_id)

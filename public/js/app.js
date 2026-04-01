@@ -46,9 +46,10 @@ class WebRTCMeetingAPI {
     // Media toggles
     this._micEnabled  = true;
     this._camEnabled  = true;
-    this._isSharing     = false;
-    this._shareStream   = null;
-    this._focusTileId   = null;
+    this._isSharing       = false;
+    this._shareStream     = null;
+    this._presenterUserId = null; // user_id of whoever is currently sharing screen
+    this._focusTileId     = null;
 
     // Recording
     this._isRecording   = false;
@@ -56,8 +57,35 @@ class WebRTCMeetingAPI {
     this._recordChunks  = [];
 
     // Chat
-    this._chatOpen    = false;
-    this._unread      = 0;
+
+    this._chatOpen       = false;
+    this._unread         = 0;
+    this._privateUnread  = 0;
+    this._chatRestoredFromSession = false;
+    this._bgFilter          = 'none';
+    this._filterCanvas      = null;
+    this._filterCtx         = null;
+    this._filterStream      = null;
+    this._filterAnimId      = null;
+    this._filterSrcVid      = null;
+    this._filterPanelOpen   = false;
+    this._selfieSegmentation = null;
+    this._blurCanvas        = null;
+    this._blurCtx           = null;
+    this._tmpCanvas         = null;
+    this._tmpCtx            = null;
+    this._maskCanvas        = null;
+    this._maskCtx           = null;
+    this._segCanvas         = null;
+    this._segCtx            = null;
+    this._hasMask           = false;
+    this._segPending        = false;
+    this._bgImageEl         = null;
+    this._bgImages          = {};   // cache: bgName → HTMLImageElement
+    this._segResults        = null;
+    this._chatSubTab     = "public"; // "public" | "private"
+    this._popupTimer     = null;
+    this._privateReplyTo = null;    // { userId, name } — host's active reply target
 
     // Raise hand
     this._handRaised  = false;
@@ -729,6 +757,20 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-mic-off").style.display = "";
     }
     this._startSpeakerDetection();
+    this._restoreChatHistory();
+  }
+
+  _restoreChatHistory() {
+    try {
+      const key = 'wrtc_chat_' + this.roomName;
+      const stored = JSON.parse(sessionStorage.getItem(key) || '[]');
+      if (stored.length > 0) {
+        this._chatRestoredFromSession = true;
+        stored.forEach(({ name, text, ts, isMine, container, isPrivate }) => {
+          this._renderMessage(name, text, ts, isMine, container, isPrivate, null);
+        });
+      }
+    } catch(_) {}
   }
 
   _applySettings() {
@@ -1059,6 +1101,28 @@ class WebRTCMeetingAPI {
       .wrtc-btn-leave:hover{background:#ea4335;transform:scale(1.04)}
       .wrtc-divider{width:1px;height:28px;background:rgba(255,255,255,.12);flex-shrink:0;margin:0 2px}
 
+      /* ── 3-DOT MORE MENU ── */
+      .wrtc-more-menu{
+        position:fixed;
+        background:#1e2024;border:1px solid rgba(255,255,255,.13);border-radius:12px;
+        padding:6px;z-index:40;min-width:200px;
+        box-shadow:0 8px 32px rgba(0,0,0,.55);
+        flex-direction:column;gap:2px;
+      }
+      .wrtc-more-item{
+        display:flex;align-items:center;gap:12px;padding:10px 14px;
+        border-radius:8px;cursor:pointer;color:#e8eaed;font-size:14px;
+        transition:background .12s;
+      }
+      .wrtc-more-item:hover{background:rgba(255,255,255,.08)}
+      .wrtc-more-item svg{flex-shrink:0;opacity:.8}
+      .wrtc-more-divider{height:1px;background:rgba(255,255,255,.1);margin:4px 0}
+      .wrtc-menu-badge{
+        background:#ea4335;color:#fff;font-size:10px;font-weight:700;
+        border-radius:10px;min-width:18px;height:18px;padding:0 5px;
+        display:flex;align-items:center;justify-content:center;
+      }
+
       /* ── SIDE PANEL (People + Chat) ── */
       .wrtc-side-panel{
         position:absolute;top:0;right:0;bottom:0;width:340px;z-index:32;
@@ -1210,6 +1274,105 @@ class WebRTCMeetingAPI {
       }
       .wrtc-chat-send:hover{background:#1557b0;transform:scale(1.06)}
 
+      /* ── CHAT SUB-TABS (host only) ── */
+      .wrtc-chat-subtabs{
+        display:flex;border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0;
+      }
+      .wrtc-chat-subtab{
+        flex:1;background:none;border:none;color:rgba(255,255,255,.5);
+        font-size:12px;font-weight:500;padding:8px 4px;cursor:pointer;
+        position:relative;transition:color .15s;font-family:inherit;
+        border-bottom:2px solid transparent;margin-bottom:-1px;
+      }
+      .wrtc-chat-subtab:hover{color:rgba(255,255,255,.8)}
+      .wrtc-chat-subtab.active{color:#8ab4f8;border-bottom-color:#8ab4f8}
+      .wrtc-subtab-badge{
+        display:inline-flex;align-items:center;justify-content:center;
+        background:#ea4335;color:#fff;font-size:9px;font-weight:700;
+        border-radius:10px;min-width:16px;height:16px;padding:0 4px;
+        margin-left:5px;vertical-align:middle;
+        opacity:0;transition:opacity .15s;
+      }
+      .wrtc-subtab-badge.show{opacity:1}
+
+      /* ── SEND MENU (guest) ── */
+      .wrtc-chat-footer{position:relative}
+      .wrtc-send-menu{
+        position:absolute;bottom:calc(100% + 6px);right:0;
+        background:#3c4043;border:1px solid rgba(255,255,255,.15);
+        border-radius:10px;overflow:hidden;z-index:20;
+        box-shadow:0 4px 16px rgba(0,0,0,.5);min-width:200px;
+      }
+      .wrtc-send-opt{
+        display:flex;align-items:center;gap:10px;width:100%;
+        background:none;border:none;color:#e8eaed;font-size:13px;
+        padding:11px 16px;cursor:pointer;text-align:left;font-family:inherit;
+        transition:background .12s;
+      }
+      .wrtc-send-opt:hover{background:rgba(255,255,255,.08)}
+      .wrtc-send-opt svg{flex-shrink:0;opacity:.7}
+
+      /* ── REPLY BUTTON on private messages ── */
+      .wrtc-msg-reply{
+        background:none;border:1px solid rgba(138,180,248,.35);border-radius:6px;
+        color:#8ab4f8;font-size:11px;font-family:inherit;padding:2px 8px;
+        cursor:pointer;margin-top:4px;transition:background .12s;
+      }
+      .wrtc-msg-reply:hover{background:rgba(138,180,248,.12)}
+      /* ── Reply-to banner above footer ── */
+      .wrtc-reply-banner{
+        display:flex;align-items:center;gap:8px;
+        padding:6px 14px;background:rgba(138,180,248,.1);
+        border-top:1px solid rgba(138,180,248,.2);font-size:12px;color:#8ab4f8;
+        flex-shrink:0;
+      }
+      .wrtc-reply-banner-text{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .wrtc-reply-cancel{
+        background:none;border:none;color:rgba(255,255,255,.4);cursor:pointer;
+        padding:0;font-size:14px;line-height:1;flex-shrink:0;
+      }
+      .wrtc-reply-cancel:hover{color:#e8eaed}
+
+      /* ── PRIVATE "To:" recipient row (host only) ── */
+      .wrtc-to-row{
+        display:flex;align-items:center;gap:8px;
+        padding:6px 14px;border-top:1px solid rgba(255,255,255,.06);flex-shrink:0;
+      }
+      .wrtc-to-label{font-size:11px;color:rgba(255,255,255,.4);flex-shrink:0}
+      .wrtc-to-select{
+        flex:1;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+        border-radius:8px;padding:5px 10px;color:#e8eaed;font-size:12px;
+        font-family:inherit;outline:none;cursor:pointer;
+        transition:border-color .15s;
+      }
+      .wrtc-to-select:focus{border-color:rgba(138,180,248,.5)}
+      .wrtc-to-select option{background:#2d2e31;color:#e8eaed}
+
+      /* ── HOST MSG POPUP ── */
+      .wrtc-msg-popup{
+        position:absolute;bottom:80px;right:16px;
+        background:#292b2e;border:1px solid rgba(138,180,248,.3);
+        border-left:3px solid #1a73e8;border-radius:10px;
+        padding:12px 16px;max-width:280px;z-index:60;
+        box-shadow:0 4px 20px rgba(0,0,0,.5);
+        animation:wrtc-pop-in .2s ease;
+      }
+      @keyframes wrtc-pop-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+      .wrtc-msg-popup-from{font-size:10px;color:#fbbc05;font-weight:600;margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px}
+      .wrtc-msg-popup-name{font-size:12px;font-weight:600;color:#8ab4f8;margin-bottom:6px}
+      .wrtc-msg-popup-text{font-size:13px;color:#e8eaed;word-break:break-word;line-height:1.4}
+      .wrtc-msg-popup-close{
+        position:absolute;top:8px;right:8px;background:none;border:none;
+        color:rgba(255,255,255,.4);cursor:pointer;padding:2px;font-size:14px;line-height:1;
+      }
+      .wrtc-msg-popup-close:hover{color:#e8eaed}
+
+      /* ── PRIVATE MSG LABEL ── */
+      .wrtc-msg-private-label{
+        font-size:10px;color:#fbbc05;font-weight:600;margin-bottom:2px;
+        text-transform:uppercase;letter-spacing:.4px;
+      }
+
       /* ── TOAST ── */
       .wrtc-toast{
         position:absolute;top:68px;left:50%;
@@ -1353,6 +1516,14 @@ class WebRTCMeetingAPI {
 
           <!-- Chat tab content -->
           <div class="wrtc-panel-content" id="wrtc-chat-content" style="display:none;flex:1">
+            <!-- Sub-tabs: Everyone / Private (host only, hidden until isHost known) -->
+            <div class="wrtc-chat-subtabs" id="wrtc-chat-subtabs" style="display:none">
+              <button class="wrtc-chat-subtab active" id="wrtc-subtab-public">Everyone</button>
+              <button class="wrtc-chat-subtab" id="wrtc-subtab-private">
+                Private<span class="wrtc-subtab-badge" id="wrtc-private-badge"></span>
+              </button>
+            </div>
+            <!-- Public messages -->
             <div class="wrtc-chat-msgs" id="wrtc-chat-msgs">
               <div class="wrtc-chat-empty" id="wrtc-chat-empty">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="rgba(255,255,255,.2)">
@@ -1361,8 +1532,29 @@ class WebRTCMeetingAPI {
                 <p>Messages are visible only to people in this call</p>
               </div>
             </div>
+            <!-- Private messages (host receives from guests) -->
+            <div class="wrtc-chat-msgs" id="wrtc-chat-msgs-private" style="display:none">
+              <div class="wrtc-chat-empty" id="wrtc-chat-private-empty">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="rgba(255,255,255,.2)">
+                  <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+                </svg>
+                <p>No private messages yet</p>
+              </div>
+            </div>
+            <!-- "To:" recipient picker (host only, shown on Private tab) -->
+            <div class="wrtc-to-row" id="wrtc-to-row" style="display:none">
+              <span class="wrtc-to-label">To:</span>
+              <select class="wrtc-to-select" id="wrtc-to-select">
+                <option value="">Select recipient…</option>
+              </select>
+            </div>
+            <!-- Reply-to banner (host only, shown when replying privately to a guest) -->
+            <div class="wrtc-reply-banner" id="wrtc-reply-banner" style="display:none">
+              <span class="wrtc-reply-banner-text" id="wrtc-reply-banner-text">Replying privately to …</span>
+              <button class="wrtc-reply-cancel" id="wrtc-reply-cancel" title="Cancel reply">✕</button>
+            </div>
             <div class="wrtc-chat-footer">
-              <input class="wrtc-chat-input" id="wrtc-chat-input" placeholder="Send a message to everyone" maxlength="500">
+              <input class="wrtc-chat-input" id="wrtc-chat-input" placeholder="Send a message…" maxlength="500">
               <button class="wrtc-chat-send" id="wrtc-chat-send" title="Send">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
@@ -1424,21 +1616,6 @@ class WebRTCMeetingAPI {
           <span style="font-size:20px;line-height:1">✋</span>
         </button>
 
-        <!-- People -->
-        <button class="wrtc-btn" id="wrtc-btn-people" title="Show participants">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
-          </svg>
-        </button>
-
-        <!-- Chat -->
-        <button class="wrtc-btn" id="wrtc-btn-chat" title="Open chat">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
-          </svg>
-          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn"></div>
-        </button>
-
         <div class="wrtc-divider"></div>
 
         <!-- Mute All Mics (host only, shown when mics not yet all muted) -->
@@ -1470,11 +1647,12 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
-        <!-- Invite -->
-        <button class="wrtc-btn" id="wrtc-btn-invite" title="Invite people">
+        <!-- 3-dot More menu -->
+        <button class="wrtc-btn" id="wrtc-btn-more" title="More options" style="position:relative">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+            <circle cx="12" cy="5"  r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
           </svg>
+          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn" style="display:none"></div>
         </button>
 
         <!-- Leave -->
@@ -1484,6 +1662,36 @@ class WebRTCMeetingAPI {
           </svg>
           Leave
         </button>
+      </div>
+
+      <!-- Hidden legacy buttons kept for JS compatibility -->
+      <button id="wrtc-btn-chat"   style="display:none"></button>
+      <button id="wrtc-btn-people" style="display:none"></button>
+      <button id="wrtc-btn-filter" style="display:none"></button>
+      <button id="wrtc-btn-invite" style="display:none"></button>
+
+      <!-- 3-dot dropdown menu -->
+      <div class="wrtc-more-menu" id="wrtc-more-menu" style="display:none">
+        <div class="wrtc-more-item" id="wrtc-more-chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
+          </svg>
+          <span>Chat</span>
+          <div class="wrtc-btn-badge wrtc-menu-badge" id="wrtc-chat-badge-menu" style="display:none;position:relative;top:0;right:0;margin-left:auto"></div>
+        </div>
+        <div class="wrtc-more-item" id="wrtc-more-people">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+          </svg>
+          <span>Participants</span>
+        </div>
+        <div class="wrtc-more-divider"></div>
+        <div class="wrtc-more-item" id="wrtc-more-invite">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
+          <span>Invite People</span>
+        </div>
       </div>
 
       <div class="wrtc-toast" id="wrtc-toast"></div>
@@ -1554,15 +1762,59 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-share").addEventListener("click", () => this._toggleScreenShare());
     document.getElementById("wrtc-btn-rec").addEventListener("click",   () => this._toggleRecording());
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
-    document.getElementById("wrtc-btn-people").addEventListener("click", () => this._togglePanel("people"));
+    // 3-dot more menu
+    document.getElementById("wrtc-btn-more").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById("wrtc-more-menu");
+      const open = menu.style.display === "flex";
+      if (open) { menu.style.display = "none"; return; }
+      menu.style.display = "flex";
+      // Position above the button, centered on it
+      const btn  = document.getElementById("wrtc-btn-more");
+      const rect = btn.getBoundingClientRect();
+      const menuW = menu.offsetWidth || 180;
+      let left = rect.left + rect.width / 2 - menuW / 2;
+      // Clamp so it doesn't go off-screen
+      left = Math.max(8, Math.min(left, window.innerWidth - menuW - 8));
+      menu.style.left   = left + "px";
+      menu.style.bottom = (window.innerHeight - rect.top + 8) + "px";
+      menu.style.top    = "";
+    });
+    document.getElementById("wrtc-more-chat").addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+      this._togglePanel("chat");
+    });
+    document.getElementById("wrtc-more-people").addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+      this._togglePanel("people");
+    });
+    document.getElementById("wrtc-more-invite").addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+      this._showInvite();
+    });
+    // Close more menu on outside click
+    document.addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+    });
     document.getElementById("wrtc-user-count").closest(".wrtc-peer-chip").addEventListener("click", () => this._togglePanel("people"));
-    document.getElementById("wrtc-btn-chat").addEventListener("click",   () => this._togglePanel("chat"));
     document.getElementById("wrtc-tab-people").addEventListener("click", () => this._switchTab("people"));
     document.getElementById("wrtc-tab-chat").addEventListener("click",   () => this._switchTab("chat"));
     document.getElementById("wrtc-panel-close").addEventListener("click",() => this._closePanel());
-    document.getElementById("wrtc-chat-send").addEventListener("click",  () => this._sendChat());
+    document.getElementById("wrtc-chat-send").addEventListener("click", () => this._sendChatByTab());
     document.getElementById("wrtc-chat-input").addEventListener("keydown", e => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._sendChat(); }
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); this._sendChatByTab(); }
+    });
+    // Sub-tab clicks
+    document.getElementById("wrtc-subtab-public").addEventListener("click",  () => this._switchChatSubTab("public"));
+    document.getElementById("wrtc-subtab-private").addEventListener("click", () => this._switchChatSubTab("private"));
+    // Cancel private reply (host)
+    document.getElementById("wrtc-reply-cancel").addEventListener("click", () => this._clearReplyTarget());
+    // "To:" recipient picker (host — Private tab)
+    document.getElementById("wrtc-to-select").addEventListener("change", (e) => {
+      const userId = e.target.value;
+      if (!userId) { this._clearReplyTarget(); return; }
+      const name = this._displayName(userId);
+      this._setReplyTarget(userId, name);
     });
 
     // When chat panel is open and user types anywhere in the meeting,
@@ -1720,6 +1972,12 @@ class WebRTCMeetingAPI {
   // SCREEN SHARE
   // ═══════════════════════════════════════════════════════════════════════
   async _toggleScreenShare() {
+    // Block if someone else is already presenting
+    if (!this._isSharing && this._presenterUserId) {
+      const presenterName = this._displayName(this._presenterUserId);
+      this._showBlockedShareModal(presenterName);
+      return;
+    }
     if (this._isSharing) {
       this._shareStream?.getTracks().forEach(t => t.stop());
       this._shareStream = null;
@@ -1730,6 +1988,7 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-share").style.display      = "";
       document.getElementById("wrtc-ico-share-stop").style.display  = "none";
       document.getElementById("wrtc-local-video").srcObject = this._localStream;
+      this._presenterUserId = null;
       this._clearPresenter();
       this._sendWS({ type: "presenting", payload: { active: false } });
       this._toast("Screen sharing stopped");
@@ -2013,8 +2272,9 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-chat-content").style.display   = tab === "chat"   ? "flex" : "none";
     if (tab === "chat") {
       this._unread = 0;
-      document.getElementById("wrtc-chat-badge").classList.remove("show");
-      document.getElementById("wrtc-chat-badge-btn").classList.remove("show");
+      ["wrtc-chat-badge","wrtc-chat-badge-btn","wrtc-chat-badge-menu"].forEach(id => {
+        document.getElementById(id)?.classList.remove("show");
+      });
       setTimeout(() => document.getElementById("wrtc-chat-input")?.focus(), 260);
     }
   }
@@ -2118,21 +2378,53 @@ class WebRTCMeetingAPI {
     return div;
   }
 
-  _sendChat() {
+  // Determines send destination from the active sub-tab — no dropdown needed.
+  _sendChatByTab() {
+    if (this._chatSubTab === "private") {
+      this._sendChat("private");
+    } else {
+      this._sendChat("everyone");
+    }
+  }
+
+  _sendChat(target = "everyone") {
     const input = document.getElementById("wrtc-chat-input");
     const text  = input?.value.trim();
     if (!text) return;
     input.value = "";
     const ts = Date.now();
-    this._sendWS({ type: "chat", payload: { text, ts } });
-    this._renderMessage("You", text, ts, true);
+
+    if (target === "private") {
+      if (this._isHost) {
+        // Host on Private tab: must have a reply target selected
+        if (!this._privateReplyTo) {
+          this._toast("Click 'Reply privately' on a message first");
+          return;
+        }
+        const { userId, name } = this._privateReplyTo;
+        this._sendWS({ type: "chat-private", payload: { text, ts, to: userId } });
+        this._renderMessage(`You → ${name}`, text, ts, true, "private");
+      } else {
+        // Guest on Private tab → goes to host only
+        this._sendWS({ type: "chat-private", payload: { text, ts } });
+        this._renderMessage("You (private)", text, ts, true, "private");
+      }
+    } else {
+      // Everyone tab → broadcast; host messages show as popup on recipients
+      const payload = this._isHost ? { text, ts, isHostMsg: true } : { text, ts };
+      this._sendWS({ type: "chat", payload });
+      this._renderMessage("You", text, ts, true, "public");
+    }
   }
 
-  _renderMessage(name, text, ts, isMine = false) {
-    const empty = document.getElementById("wrtc-chat-empty");
+  _renderMessage(name, text, ts, isMine = false, container = "public", isPrivate = false, replyToUserId = null) {
+    const msgsId = container === "private" ? "wrtc-chat-msgs-private" : "wrtc-chat-msgs";
+    const emptyId = container === "private" ? "wrtc-chat-private-empty" : "wrtc-chat-empty";
+    const empty = document.getElementById(emptyId);
     if (empty) empty.style.display = "none";
 
-    const msgs = document.getElementById("wrtc-chat-msgs");
+    const msgs = document.getElementById(msgsId);
+    if (!msgs) return;
     const time  = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const safe  = text.replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const LIMIT = 120;
@@ -2142,13 +2434,20 @@ class WebRTCMeetingAPI {
     const div = document.createElement("div");
     div.className = `wrtc-msg${isMine ? " mine" : ""}`;
     div.innerHTML = `
+      ${isPrivate ? '<div class="wrtc-msg-private-label">🔒 Private</div>' : ""}
       <div class="wrtc-msg-header">
         <span class="wrtc-msg-name${isMine ? " mine" : ""}">${name}</span>
         <span class="wrtc-msg-time">${time}</span>
       </div>
       <span class="wrtc-msg-text" data-full="${safe.replace(/"/g,"&quot;")}" data-expanded="false">${preview}</span>
-      ${needsTrunc ? '<span class="wrtc-msg-more">Show more</span>' : ""}`;
+      ${needsTrunc ? '<span class="wrtc-msg-more">Show more</span>' : ""}
+      ${replyToUserId ? '<button class="wrtc-msg-reply">Reply privately</button>' : ""}`;
 
+    if (replyToUserId) {
+      div.querySelector(".wrtc-msg-reply").addEventListener("click", () => {
+        this._setReplyTarget(replyToUserId, name);
+      });
+    }
     if (needsTrunc) {
       div.querySelector(".wrtc-msg-more").addEventListener("click", function () {
         const span    = div.querySelector(".wrtc-msg-text");
@@ -2162,6 +2461,16 @@ class WebRTCMeetingAPI {
 
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
+
+    // ── Persist message to sessionStorage ──────────────────────────────────
+    try {
+      const key = 'wrtc_chat_' + this.roomName;
+      const stored = JSON.parse(sessionStorage.getItem(key) || '[]');
+      stored.push({ name, text, ts, isMine, container, isPrivate });
+      // Keep last 200 messages
+      if (stored.length > 200) stored.splice(0, stored.length - 200);
+      sessionStorage.setItem(key, JSON.stringify(stored));
+    } catch(_) {}
   }
 
   _renderSystemMsg(text) {
@@ -2244,6 +2553,86 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // TOAST
   // ═══════════════════════════════════════════════════════════════════════
+  _showMeetingReadyCard() {
+    // Don't show again if host already dismissed it this session
+    if (sessionStorage.getItem("wrtc_ready_dismissed_" + this.roomName)) return;
+    document.getElementById("wrtc-ready-card")?.remove();
+    const url  = this._shareUrl || (window.location.origin + '/sdk/join/' + this.roomName);
+    const card = document.createElement("div");
+    card.id = "wrtc-ready-card";
+    card.innerHTML = `
+      <div style="font-size:15px;font-weight:600;color:#202124;margin-bottom:12px">Your meeting's ready</div>
+      <div style="font-size:13px;color:#3c4043;margin-bottom:14px;line-height:1.5">
+        Share this joining info with others you want in the meeting
+      </div>
+      <div style="background:#f1f3f4;border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:8px">
+        <span style="font-size:12px;color:#202124;word-break:break-all;flex:1">${url}</span>
+        <button id="wrtc-ready-copy" title="Copy link" style="background:none;border:none;cursor:pointer;padding:4px;flex-shrink:0;color:#1a73e8">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        </button>
+      </div>
+      <div style="font-size:12px;color:#3c4043;margin-bottom:4px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="#5f6368" style="vertical-align:middle;margin-right:6px"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/></svg>
+        Dial-in: +91 7206053500 (Anmol Madaan)
+      </div>
+      <div style="font-size:12px;color:#3c4043;margin-bottom:16px;padding-left:20px">PIN: 140301#</div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <button id="wrtc-ready-invite" style="background:#1a73e8;color:#fff;border:none;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          Add others
+        </button>
+        <button id="wrtc-ready-close" style="background:none;border:none;cursor:pointer;color:#5f6368;font-size:13px">✕</button>
+      </div>`;
+
+    Object.assign(card.style, {
+      position: "absolute", bottom: "90px", left: "20px", zIndex: "35",
+      background: "#fff", borderRadius: "12px", padding: "20px",
+      boxShadow: "0 4px 24px rgba(0,0,0,.22)", width: "280px",
+      fontFamily: "'Google Sans',Roboto,sans-serif", animation: "wrtcSlideIn .25s ease",
+    });
+
+    // Inject keyframe once
+    if (!document.getElementById("wrtc-ready-style")) {
+      const st = document.createElement("style");
+      st.id = "wrtc-ready-style";
+      st.textContent = "@keyframes wrtcSlideIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}";
+      document.head.appendChild(st);
+    }
+
+    this.parentNode.appendChild(card);
+
+    const close = () => {
+      card.remove();
+      sessionStorage.setItem("wrtc_ready_dismissed_" + this.roomName, "1");
+    };
+    document.getElementById("wrtc-ready-close").addEventListener("click", close);
+    document.getElementById("wrtc-ready-invite").addEventListener("click", () => { close(); this._showInvite(); });
+    document.getElementById("wrtc-ready-copy").addEventListener("click", () => {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById("wrtc-ready-copy");
+        if (btn) btn.style.color = "#34a853";
+        this._toast("Link copied!");
+        setTimeout(() => { if (btn) btn.style.color = "#1a73e8"; }, 2000);
+      });
+    });
+  }
+
+  _showBlockedShareModal(presenterName) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:999;";
+    overlay.innerHTML = `
+      <div style="background:#2d2e31;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:32px 36px;max-width:360px;width:90%;text-align:center;font-family:inherit;">
+        <div style="font-size:36px;margin-bottom:14px;">🖥️</div>
+        <h3 style="color:#e8eaed;font-size:16px;font-weight:600;margin:0 0 10px;">${presenterName} is presenting</h3>
+        <p style="color:#9aa0a6;font-size:13px;margin:0 0 24px;line-height:1.5;">Please ask them to stop sharing before you can present.</p>
+        <button id="wrtc-blocked-share-ok" style="background:#1a73e8;color:#fff;border:none;border-radius:10px;padding:10px 32px;font-size:14px;font-weight:500;cursor:pointer;">Got it</button>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById("wrtc-blocked-share-ok").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  }
+
   _showInvite() {
     const url = this._shareUrl || (window.location.origin + '/sdk/join/' + this.roomName);
     const overlay = document.createElement('div');
@@ -2273,6 +2662,113 @@ class WebRTCMeetingAPI {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // ─── Host message popup ────────────────────────────────────────────────────
+  _showMsgPopup(name, text) {
+    const existing = document.getElementById("wrtc-msg-popup");
+    if (existing) existing.remove();
+    clearTimeout(this._popupTimer);
+    const safe = text.replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const el = document.createElement("div");
+    el.className = "wrtc-msg-popup";
+    el.id = "wrtc-msg-popup";
+    el.innerHTML = `
+      <button class="wrtc-msg-popup-close" title="Dismiss">✕</button>
+      <div class="wrtc-msg-popup-from">Message from Host</div>
+      <div class="wrtc-msg-popup-name">${name}</div>
+      <div class="wrtc-msg-popup-text">${safe.slice(0, 120)}${safe.length > 120 ? "…" : ""}</div>`;
+    el.querySelector(".wrtc-msg-popup-close").addEventListener("click", () => {
+      el.remove(); clearTimeout(this._popupTimer);
+    });
+    const container = document.getElementById("wrtc-container") || document.querySelector(".wrtc-wrapper") || document.body;
+    container.appendChild(el);
+    this._popupTimer = setTimeout(() => el.remove(), 6000);
+  }
+
+  // ─── Private reply target (host) ───────────────────────────────────────────
+  _refreshToSelect() {
+    const toRow = document.getElementById("wrtc-to-row");
+    const sel   = document.getElementById("wrtc-to-select");
+    if (!toRow || !sel || !this._isHost) return;
+    toRow.style.display = "flex";
+    // Re-populate options from current participants (exclude self)
+    const current = sel.value; // preserve selection if still valid
+    sel.innerHTML = '<option value="">Select recipient…</option>';
+    Object.entries(this._participants).forEach(([uid, name]) => {
+      if (uid === this._myUserId) return;
+      const opt = document.createElement("option");
+      opt.value       = uid;
+      opt.textContent = name || uid.slice(0, 8);
+      sel.appendChild(opt);
+    });
+    // Restore previous selection if still in room
+    if (current && sel.querySelector(`option[value="${current}"]`)) {
+      sel.value = current;
+    } else if (this._privateReplyTo) {
+      sel.value = this._privateReplyTo.userId || "";
+    }
+  }
+
+  _setReplyTarget(userId, name) {
+    this._privateReplyTo = { userId, name };
+    const banner = document.getElementById("wrtc-reply-banner");
+    const text   = document.getElementById("wrtc-reply-banner-text");
+    const input  = document.getElementById("wrtc-chat-input");
+    const sel    = document.getElementById("wrtc-to-select");
+    if (banner) banner.style.display = "flex";
+    if (text)   text.textContent = `Replying privately to ${name}`;
+    if (input)  { input.placeholder = `Reply to ${name}…`; input.focus(); }
+    if (sel)    sel.value = userId;
+    // Switch to private sub-tab so host can see context
+    this._switchChatSubTab("private");
+  }
+
+  _clearReplyTarget() {
+    this._privateReplyTo = null;
+    const banner = document.getElementById("wrtc-reply-banner");
+    const input  = document.getElementById("wrtc-chat-input");
+    const sel    = document.getElementById("wrtc-to-select");
+    if (banner) banner.style.display = "none";
+    if (sel)    sel.value = "";
+    // Restore placeholder based on current tab
+    if (input)  input.placeholder = this._chatSubTab === "private" ? "Type a private message…" : "Send a message…";
+  }
+
+  // ─── Switch chat sub-tab (host only) ───────────────────────────────────────
+  _switchChatSubTab(tab) {
+    this._chatSubTab = tab;
+    const pubMsgs  = document.getElementById("wrtc-chat-msgs");
+    const privMsgs = document.getElementById("wrtc-chat-msgs-private");
+    const pubTab   = document.getElementById("wrtc-subtab-public");
+    const privTab  = document.getElementById("wrtc-subtab-private");
+    const input    = document.getElementById("wrtc-chat-input");
+    if (!pubMsgs || !privMsgs) return;
+
+    if (tab === "private") {
+      pubMsgs.style.display  = "none";
+      privMsgs.style.display = "";
+      pubTab?.classList.remove("active");
+      privTab?.classList.add("active");
+      // Update placeholder to reflect private context
+      if (input) input.placeholder = this._isHost ? "Type a private message…" : "Private message to host…";
+      // Show "To:" picker for host and populate with current participants
+      if (this._isHost) this._refreshToSelect();
+      // Clear private unread badge
+      this._privateUnread = 0;
+      const badge = document.getElementById("wrtc-private-badge");
+      if (badge) { badge.textContent = ""; badge.classList.remove("show"); }
+    } else {
+      pubMsgs.style.display  = "";
+      privMsgs.style.display = "none";
+      pubTab?.classList.add("active");
+      privTab?.classList.remove("active");
+      if (input) input.placeholder = "Send a message…";
+      // Hide "To:" picker and clear reply target
+      const toRow = document.getElementById("wrtc-to-row");
+      if (toRow) toRow.style.display = "none";
+      this._clearReplyTarget();
+    }
+  }
+
   _toast(msg) {
     const el = document.getElementById("wrtc-toast");
     if (!el) return;
@@ -2455,7 +2951,12 @@ class WebRTCMeetingAPI {
     const stage     = document.getElementById("wrtc-stage");
     if (!grid || !localTile || !stage) return;
 
-    const remoteCount = Object.keys(this._peerConnections).length;
+    // Use whichever count is larger: active peer connections OR tiles already in the DOM.
+    // This ensures the grid is visible as soon as _ensureRemoteTile creates a tile, even
+    // before the WebRTC offer/answer cycle completes (e.g. right after a host refresh).
+    const pcCount     = Object.keys(this._peerConnections).length;
+    const tileCount   = grid.querySelectorAll(".wrtc-tile:not(#wrtc-local-tile)").length;
+    const remoteCount = Math.max(pcCount, tileCount);
 
     if (remoteCount === 0) {
       // Alone — move local tile OUT of the hidden grid directly into stage
@@ -2679,7 +3180,10 @@ class WebRTCMeetingAPI {
     this._log(`Creating PeerConnection for ${remoteUserId}`);
     const pc = new RTCPeerConnection(this._iceConfig);
 
-    this._localStream?.getTracks().forEach(track => pc.addTrack(track, this._localStream));
+    const videoTrack = this._localStream?.getVideoTracks()[0] ?? null;
+    const audioTrack = this._localStream?.getAudioTracks()[0] ?? null;
+    if (videoTrack) pc.addTrack(videoTrack, this._localStream);
+    if (audioTrack) pc.addTrack(audioTrack, this._localStream);
 
     pc.ontrack = (e) => {
       this._log(`Remote track from ${remoteUserId}: ${e.track.kind}`, undefined, "ok");
@@ -2699,11 +3203,21 @@ class WebRTCMeetingAPI {
       // Ensure the grid is visible once a peer connects — critical for participants
       // who join with no tracks (camera/mic denied) since ontrack never fires for them,
       // meaning _updateGrid would otherwise never be called with remoteCount > 0.
-      if (s === "connected") this._updateGrid();
-      if (s === "failed" || s === "disconnected") this._cleanupPeer(remoteUserId);
+      if (s === "connected") {
+        this._updateGrid();
+        // Re-trigger play() on the remote video in case it stalled before connection was ready.
+        const videoEl = document.getElementById(`wrtc-vid-${remoteUserId}`);
+        if (videoEl && videoEl.srcObject) videoEl.play().catch(() => {});
+      }
+      // Only hard-cleanup on "failed" — "disconnected" is transient and can self-recover.
+      // Intentional leaves (host refresh, tab close) are cleaned up by the WS "leave" message.
+      if (s === "failed") this._cleanupPeer(remoteUserId);
     };
 
     this._peerConnections[remoteUserId] = pc;
+    // Show grid immediately when any peer connection is created — don't wait for "connected"
+    // state since ICE negotiation can take several seconds and the tile is already in the DOM.
+    this._updateGrid();
     return pc;
   }
 
@@ -2728,6 +3242,9 @@ class WebRTCMeetingAPI {
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
+        // Show sub-tabs for everyone — guests need the Private tab to receive host replies
+        const subtabs = document.getElementById("wrtc-chat-subtabs");
+        if (subtabs) subtabs.style.display = "flex";
         // Re-announce our name and camera state — messages sent in onopen are consumed
         // by the knock-wait drain loop and never reach the main relay, so we re-send
         // them here after admission when the main message loop is active.
@@ -2742,6 +3259,8 @@ class WebRTCMeetingAPI {
         // even if they have no camera/mic tracks (ontrack would never fire for them).
         payload.users.forEach(uid => this._ensureRemoteTile(uid));
         this._updateGrid();  // set initial solo/grid state
+        // Show host welcome card
+        if (this._isHost) this._showMeetingReadyCard();
         break;
 
       case "join":
@@ -2788,6 +3307,7 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
         sessionStorage.removeItem("wrtc_cam_" + this.roomName);
         sessionStorage.removeItem("wrtc_start_" + this.roomName);
+        sessionStorage.removeItem("wrtc_chat_" + this.roomName);
         this._ws?.close();
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
@@ -2805,7 +3325,10 @@ class WebRTCMeetingAPI {
         this._toast(`${leaveName} left the call`);
         this._renderSystemMsg(`${leaveName} left`);
         const presenterTile = document.getElementById(`wrtc-tile-${payload.user_id}`);
-        if (presenterTile?.classList.contains("presenter")) this._clearPresenter();
+        if (presenterTile?.classList.contains("presenter")) {
+          if (this._presenterUserId === payload.user_id) this._presenterUserId = null;
+          this._clearPresenter();
+        }
         this._removeParticipant(payload.user_id);
         this._cleanupPeer(payload.user_id);
         break;
@@ -2844,17 +3367,58 @@ class WebRTCMeetingAPI {
         break;
       }
 
+      case "chat:history": {
+        if (this._chatRestoredFromSession) break; // already have local history
+        const msgs = payload.messages || [];
+        msgs.forEach(({ from: mFrom, payload: mPayload }) => {
+          const mName = this._displayName(mFrom) || mFrom?.slice(0, 8) || '?';
+          const isMine = mFrom === this._myUserId;
+          this._renderMessage(mName, mPayload.text, mPayload.ts || Date.now(), isMine, "public", false, null);
+        });
+        break;
+      }
+
       case "chat": {
         const name = this._displayName(from);
-        this._renderMessage(name, payload.text, payload.ts || Date.now(), false);
+        this._renderMessage(name, payload.text, payload.ts || Date.now(), false, "public");
         if (this._panelTab !== "chat") {
           this._unread++;
           const n = this._unread > 9 ? "9+" : this._unread;
-          ["wrtc-chat-badge","wrtc-chat-badge-btn"].forEach(id => {
+          ["wrtc-chat-badge","wrtc-chat-badge-btn","wrtc-chat-badge-menu"].forEach(id => {
             const b = document.getElementById(id);
             if (b) { b.textContent = n; b.classList.add("show"); }
           });
+        }
+        // Host messages show as popup; guest messages show as regular toast
+        if (payload.isHostMsg) {
+          this._showMsgPopup(name, payload.text);
+        } else if (this._panelTab !== "chat") {
           this._toast(`${name}: ${payload.text.slice(0, 40)}${payload.text.length > 40 ? "…" : ""}`);
+        }
+        break;
+      }
+
+      case "chat-private": {
+        const name = this._displayName(from);
+        // Render in private tab for everyone (host receives from guests, guest receives from host)
+        this._renderMessage(name, payload.text, payload.ts || Date.now(), false, "private", true, this._isHost ? from : null);
+        // Badge the private tab if not currently viewing it
+        if (this._chatSubTab !== "private") {
+          this._privateUnread++;
+          const badge = document.getElementById("wrtc-private-badge");
+          if (badge) {
+            badge.textContent = this._privateUnread > 9 ? "9+" : this._privateUnread;
+            badge.classList.add("show");
+          }
+          if (this._panelTab !== "chat") {
+            this._unread++;
+            const n = this._unread > 9 ? "9+" : this._unread;
+            ["wrtc-chat-badge","wrtc-chat-badge-btn","wrtc-chat-badge-menu"].forEach(id => {
+              const b = document.getElementById(id);
+              if (b) { b.textContent = n; b.classList.add("show"); }
+            });
+          }
+          this._toast(`🔒 Private from ${name}: ${payload.text.slice(0, 30)}${payload.text.length > 30 ? "…" : ""}`);
         }
         break;
       }
@@ -2890,9 +3454,11 @@ class WebRTCMeetingAPI {
       case "presenting": {
         const name = this._displayName(from);
         if (payload.active) {
+          this._presenterUserId = from;
           this._toast(`${name} is presenting`);
           this._waitForPresenterVideo(from);
         } else {
+          if (this._presenterUserId === from) this._presenterUserId = null;
           this._clearPresenter();
           this._toast(`${name} stopped presenting`);
         }
@@ -3017,6 +3583,7 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem('wrtc_mic_' + this.roomName);
         sessionStorage.removeItem('wrtc_cam_' + this.roomName);
         sessionStorage.removeItem('wrtc_start_' + this.roomName);
+        sessionStorage.removeItem('wrtc_chat_' + this.roomName);
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
           + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
@@ -3186,7 +3753,17 @@ class WebRTCMeetingAPI {
 
     const videoEl    = document.getElementById(`wrtc-vid-${userId}`);
     const avatarWrap = document.getElementById(`wrtc-avatar-${userId}`);
-    if (videoEl) videoEl.srcObject = stream;
+
+    if (videoEl) {
+      // Only update srcObject if the stream actually changed — avoids resetting a
+      // playing video when the second ontrack event (audio track) arrives.
+      if (videoEl.srcObject !== stream) {
+        videoEl.srcObject = stream;
+      }
+      // Explicitly call play() — Chrome may not honour autoplay on programmatically
+      // created video elements after a page reconnect (autoplay policy).
+      videoEl.play().catch(() => {});
+    }
 
     if (avatarWrap) {
       // A live video track is arriving — hide avatar unless cam-state says camera is off.
@@ -3312,10 +3889,14 @@ class WebRTCMeetingAPI {
     sessionStorage.removeItem('wrtc_mic_' + this.roomName);
     sessionStorage.removeItem('wrtc_cam_' + this.roomName);
     sessionStorage.removeItem('wrtc_start_' + this.roomName);
+    sessionStorage.removeItem('wrtc_chat_' + this.roomName);
+    sessionStorage.removeItem('wrtc_ready_dismissed_' + this.roomName);
+    sessionStorage.removeItem('wrtc_bg_filter_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
     this._localStream?.getTracks().forEach(t => t.stop());
+    this._filterStream?.getTracks().forEach(t => t.stop());
     this._shareStream?.getTracks().forEach(t => t.stop());
     if (this._isRecording) this._mediaRecorder?.stop();
     clearInterval(this._clockTimer);

@@ -40,6 +40,8 @@ class ConnectionManager:
         # base user IDs (UUID without session suffix) that were admitted to each room
         # used to validate reconnect=1 bypass — only admitted guests may skip knock
         self._admitted_guests: dict[str, set[str]] = defaultdict(set)
+        # per-room public chat history for late joiners (max 100 messages)
+        self._public_chat: dict[str, list[dict]] = defaultdict(list)
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -128,6 +130,7 @@ class ConnectionManager:
             self._room_hosts.pop(meeting_id, None)
             self._permanent_hosts.pop(meeting_id, None)
             self._admitted_guests.pop(meeting_id, None)
+            self._public_chat.pop(meeting_id, None)
             self.cancel_host_grace(meeting_id)
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
 
@@ -196,6 +199,17 @@ class ConnectionManager:
 
     def room_size(self, meeting_id: str) -> int:
         return len(self._rooms.get(meeting_id, {}))
+
+    # ── Public chat history (for late joiners) ────────────────────────────────
+
+    def add_public_message(self, room_id: str, entry: dict) -> None:
+        log = self._public_chat[room_id]
+        log.append(entry)
+        if len(log) > 100:
+            del log[:-100]
+
+    def get_public_chat(self, room_id: str) -> list[dict]:
+        return list(self._public_chat.get(room_id, []))
 
     # ── Message delivery ──────────────────────────────────────────────────────
 
