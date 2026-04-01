@@ -39,6 +39,15 @@ PLAN_PROJECT_LIMITS: dict[str | None, int | None] = {
     "premium": None,   # unlimited
 }
 
+# Max simultaneous non-host participants per meeting (host is always free)
+# Total room capacity = limit + 1 (host)
+PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
+    None:      5,      # free  → 5 participants + host = 6 total
+    "basic":   5,
+    "pro":    20,
+    "premium": None,   # unlimited
+}
+
 
 def _current_month() -> str:
     """Return current month as 'YYYY-MM'."""

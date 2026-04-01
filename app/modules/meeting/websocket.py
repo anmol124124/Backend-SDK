@@ -463,11 +463,58 @@ async def signaling_endpoint(
     is_embed_host = token_type == "access" and token_role == "host"
     is_public    = token_type in ("public_guest", "public_host")
 
-    # ── Step 4: MAU enforcement (guests only, unique per connection) ──────────
+    # ── Step 4: MAU + concurrent participant limit (non-hosts only) ──────────
     if not is_embed_host and token_role != "host":
-        from app.modules.project.mau import check_and_record_mau, get_project_and_plan
+        from app.modules.project.mau import (
+            check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS,
+        )
         project_id, owner_plan = await get_project_and_plan(meeting_id)
+        _joiner_name = websocket.query_params.get("name") or "A participant"
+
         if project_id:
+            # 4a: Concurrent participant limit — checked before MAU so the
+            #     "room full" message is more user-friendly than an MAU error.
+            p_limit = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 5)
+            if p_limit is not None:
+                current_size   = manager.room_size(room_id)
+                host_present   = 1 if manager.get_host(room_id) else 0
+                non_host_count = max(0, current_size - host_present)
+                if non_host_count >= p_limit:
+                    await websocket.accept()
+                    await websocket.send_json({
+                        "type": "error",
+                        "from": "server",
+                        "payload": {
+                            "detail": (
+                                f"This meeting is full ({non_host_count}/{p_limit} participants). "
+                                "Ask the host to upgrade their plan to allow more participants."
+                            ),
+                            "code": "room_full",
+                            "limit": p_limit,
+                            "current": non_host_count,
+                            "plan": owner_plan or "basic",
+                        },
+                    })
+                    await websocket.close(code=4430, reason="Room full")
+                    hid = manager.get_host(room_id)
+                    if hid:
+                        await manager.send_personal(room_id, hid, {
+                            "type": "room_full_warning",
+                            "from": "server",
+                            "payload": {
+                                "name": _joiner_name,
+                                "current": non_host_count,
+                                "limit": p_limit,
+                                "plan": owner_plan or "basic",
+                            },
+                        })
+                    logger.info(
+                        "Room full — participant blocked  room=%s  user=%s  count=%d  limit=%d",
+                        room_id, user_id, non_host_count, p_limit,
+                    )
+                    return
+
+            # 4b: MAU enforcement
             allowed, reason = await check_and_record_mau(project_id, user_id, owner_plan)
             if not allowed:
                 await websocket.accept()
@@ -477,7 +524,6 @@ async def signaling_endpoint(
                     "payload": {"detail": reason, "code": "mau_limit_reached"},
                 })
                 await websocket.close(code=4429, reason="MAU limit reached")
-                # Warn the host that someone was blocked due to MAU limit
                 host_id = manager.get_host(meeting_id)
                 if host_id:
                     await manager.send_personal(meeting_id, host_id, {

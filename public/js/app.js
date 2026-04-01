@@ -2063,7 +2063,7 @@ class WebRTCMeetingAPI {
           document.getElementById("wrtc-btn-cam").classList.remove("muted");
           document.getElementById("wrtc-ico-cam").style.display     = "";
           document.getElementById("wrtc-ico-cam-off").style.display = "none";
-          document.getElementById("wrtc-local-video").srcObject     = this._localStream;
+          document.getElementById("wrtc-local-video").srcObject     = this._activeVideoStream();
           document.getElementById("wrtc-local-video").style.display = "block";
           document.getElementById("wrtc-pip-avatar").style.display  = "none";
           this._sendWS({ type: "cam-state", payload: { enabled: true } });
@@ -2106,7 +2106,7 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-btn-share").classList.remove("on-air");
       document.getElementById("wrtc-ico-share").style.display      = "";
       document.getElementById("wrtc-ico-share-stop").style.display  = "none";
-      document.getElementById("wrtc-local-video").srcObject = this._localStream;
+      document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
       this._presenterUserId = null;
       this._clearPresenter();
       this._sendWS({ type: "presenting", payload: { active: false } });
@@ -2252,7 +2252,7 @@ class WebRTCMeetingAPI {
     thumbs.style.display = "flex";
 
     // PiP switches back to camera so you can see yourself
-    document.getElementById("wrtc-local-video").srcObject = this._localStream;
+    document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
   }
 
   _addThumb(tile, thumbs) {
@@ -3238,7 +3238,7 @@ class WebRTCMeetingAPI {
     try {
       this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       this._log("getUserMedia OK", this._localStream.getTracks().map(t => `${t.kind}:${t.label}`), "ok");
-      document.getElementById("wrtc-local-video").srcObject = this._localStream;
+      document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
       this._setupAudioAnalyser("local", this._localStream);
     } catch (err) {
       this._log("getUserMedia FAILED: " + err.message, undefined, "error");
@@ -3629,6 +3629,25 @@ class WebRTCMeetingAPI {
               '<h2 style="color:#e8eaed;font-size:18px;margin:0 0 8px;font-weight:500">Unable to join meeting</h2>' +
               '<p style="color:#9aa0a6;font-size:14px;margin:0">Please contact the admin to join this meeting.</p>' +
             '</div>';
+        } else if (payload.code === "room_full") {
+          this._localStream?.getTracks().forEach(t => t.stop());
+          this._ws?.close();
+          const limit   = payload.limit   || "?";
+          const plan    = payload.plan    || "basic";
+          this.parentNode.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#202124;z-index:99999;';
+          this.parentNode.innerHTML =
+            '<div style="text-align:center;padding:40px;background:#2d2e31;border:1px solid rgba(234,67,53,.35);border-radius:16px;max-width:420px;font-family:sans-serif">' +
+              '<div style="font-size:52px;margin-bottom:16px">🚫</div>' +
+              '<h2 style="color:#e8eaed;font-size:20px;margin:0 0 10px;font-weight:600">Meeting is Full</h2>' +
+              '<p style="color:#9aa0a6;font-size:14px;line-height:1.6;margin:0 0 16px">' +
+                'This meeting has reached its limit of <strong style="color:#e8eaed">' + limit + ' participant(s)</strong> ' +
+                'on the <strong style="color:#8ab4f8">' + plan + '</strong> plan.<br>' +
+                'Someone needs to leave before you can join.' +
+              '</p>' +
+              '<div style="background:rgba(138,180,248,.08);border:1px solid rgba(138,180,248,.2);border-radius:10px;padding:12px 16px;">' +
+                '<p style="color:#8ab4f8;font-size:13px;margin:0">Ask the meeting host to upgrade their plan to allow more participants.</p>' +
+              '</div>' +
+            '</div>';
         }
         break;
 
@@ -3642,6 +3661,15 @@ class WebRTCMeetingAPI {
       case "mau_warning":
         this._toastLong("⚠️ MAU limit reached — a participant was blocked. Upgrade your plan to allow more participants.");
         break;
+
+      case "room_full_warning": {
+        const name  = payload.name    || "A participant";
+        const cur   = payload.current || "?";
+        const lim   = payload.limit   || "?";
+        const plan  = payload.plan    || "basic";
+        this._toastLong(`🚫 ${name} couldn't join — meeting is full (${cur}/${lim} on ${plan} plan). Upgrade your plan to increase capacity.`);
+        break;
+      }
 
       case "mute-all":
         if (!this._micEnabled) break; // already off by participant — host mute doesn't own it
@@ -4105,7 +4133,12 @@ class WebRTCMeetingAPI {
 
     // Point the local preview at the filtered stream
     const lv = document.getElementById("wrtc-local-video");
-    if (lv) lv.srcObject = this._filterStream;
+    if (lv) {
+      lv.srcObject = this._filterStream;
+      lv.style.display = "block";
+      document.getElementById("wrtc-pip-avatar").style.display = "none";
+      lv.play().catch(() => {});
+    }
 
     // Start the per-frame processing loop
     this._stopFilterLoop();
@@ -4127,6 +4160,12 @@ class WebRTCMeetingAPI {
     // Restore local preview
     const lv = document.getElementById("wrtc-local-video");
     if (lv) lv.srcObject = this._localStream;
+  }
+
+  // Returns the stream that should be shown in the local video preview.
+  // When a filter is active use _filterStream, otherwise _localStream.
+  _activeVideoStream() {
+    return (this._bgFilter !== "none" && this._filterStream) ? this._filterStream : this._localStream;
   }
 
   _stopFilterLoop() {
