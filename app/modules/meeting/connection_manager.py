@@ -18,6 +18,7 @@ import logging
 from collections import defaultdict
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,12 @@ class ConnectionManager:
         return list(self._rooms.get(meeting_id, {}).keys())
 
     def is_connected(self, meeting_id: str, user_id: str) -> bool:
-        return user_id in self._rooms.get(meeting_id, {})
+        ws = self._rooms.get(meeting_id, {}).get(user_id)
+        if ws is None:
+            return False
+        # Treat a WebSocket that has already received a close frame as gone,
+        # even if manager.disconnect() hasn't been called yet.
+        return ws.client_state != WebSocketState.DISCONNECTED
 
     def get_session_id_for_base(self, meeting_id: str, base_user_id: str) -> str | None:
         """Return the connected session user_id for a given base user ID (UUID without suffix).
@@ -198,7 +204,13 @@ class ConnectionManager:
         return None
 
     def room_size(self, meeting_id: str) -> int:
-        return len(self._rooms.get(meeting_id, {}))
+        # Only count WebSockets that are still connected — skip any whose
+        # close frame has already been received (client_state == DISCONNECTED)
+        # but whose manager.disconnect() hasn't been called yet (race window).
+        return sum(
+            1 for ws in self._rooms.get(meeting_id, {}).values()
+            if ws.client_state != WebSocketState.DISCONNECTED
+        )
 
     # ── Public chat history (for late joiners) ────────────────────────────────
 

@@ -3644,9 +3644,10 @@ class WebRTCMeetingAPI {
                 'on the <strong style="color:#8ab4f8">' + plan + '</strong> plan.<br>' +
                 'Someone needs to leave before you can join.' +
               '</p>' +
-              '<div style="background:rgba(138,180,248,.08);border:1px solid rgba(138,180,248,.2);border-radius:10px;padding:12px 16px;">' +
+              '<div style="background:rgba(138,180,248,.08);border:1px solid rgba(138,180,248,.2);border-radius:10px;padding:12px 16px;margin-bottom:20px">' +
                 '<p style="color:#8ab4f8;font-size:13px;margin:0">Ask the meeting host to upgrade their plan to allow more participants.</p>' +
               '</div>' +
+              '<button onclick="window.location.reload()" style="background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:10px 28px;font-size:14px;font-weight:500;cursor:pointer;">Try Again</button>' +
             '</div>';
         }
         break;

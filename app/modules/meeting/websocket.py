@@ -476,9 +476,34 @@ async def signaling_endpoint(
             #     "room full" message is more user-friendly than an MAU error.
             p_limit = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 5)
             if p_limit is not None:
-                current_size   = manager.room_size(room_id)
-                host_present   = 1 if manager.get_host(room_id) else 0
-                non_host_count = max(0, current_size - host_present)
+                # Compute non-host count. Verify host is actually connected (not
+                # just a stale registry entry from a recent reconnect/refresh).
+                def _non_host_count() -> int:
+                    size = manager.room_size(room_id)
+                    hid  = manager.get_host(room_id)
+                    host_in_room = 1 if (hid and manager.is_connected(room_id, hid)) else 0
+                    return max(0, size - host_in_room)
+
+                non_host_count = _non_host_count()
+                logger.info(
+                    "Capacity check  room=%s  user=%s  room_size=%d  host_id=%s  "
+                    "host_connected=%s  non_host_count=%d  p_limit=%d",
+                    room_id, user_id,
+                    manager.room_size(room_id),
+                    manager.get_host(room_id),
+                    bool(manager.get_host(room_id) and manager.is_connected(room_id, manager.get_host(room_id))),
+                    non_host_count, p_limit,
+                )
+                if non_host_count >= p_limit:
+                    # Race-condition guard: a participant may be mid-disconnect
+                    # (their finally block hasn't run yet). Wait briefly and recheck
+                    # before issuing a hard rejection.
+                    await asyncio.sleep(2.0)
+                    non_host_count = _non_host_count()
+                    logger.info(
+                        "Capacity recheck (after sleep)  room=%s  room_size=%d  non_host_count=%d  p_limit=%d",
+                        room_id, manager.room_size(room_id), non_host_count, p_limit,
+                    )
                 if non_host_count >= p_limit:
                     await websocket.accept()
                     await websocket.send_json({
@@ -515,7 +540,15 @@ async def signaling_endpoint(
                     return
 
             # 4b: MAU enforcement
-            allowed, reason = await check_and_record_mau(project_id, user_id, owner_plan)
+            # Skip MAU check when a concurrent participant limit is in place — the
+            # concurrent limit already controls who can be in the room.  MAU would
+            # otherwise block new joiners even when there is a free slot (e.g. plan
+            # has 5 MAU and 5 concurrent: after 5 unique users join+leave, no new
+            # user could ever join despite the room having space).
+            # Use base_user_id (no session suffix) so the same person rejoining
+            # doesn't burn a new MAU slot each time they refresh or rejoin.
+            _skip_mau = (p_limit is not None)
+            allowed, reason = (True, "") if _skip_mau else await check_and_record_mau(project_id, base_user_id, owner_plan)
             if not allowed:
                 await websocket.accept()
                 await websocket.send_json({
