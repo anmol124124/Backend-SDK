@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +80,27 @@ app.include_router(project_router, prefix=API_PREFIX)
 app.include_router(public_meeting_router, prefix=API_PREFIX)
 app.include_router(payments_router, prefix=API_PREFIX)
 app.include_router(signaling_router)  # WebSocket — no /api/v1 prefix, uses /ws/meetings/{id}
+
+
+# ── Background images (CORS-safe route for virtual background feature) ────────
+_ALLOWED_BG = {"office", "nature", "library", "abstract", "beach"}
+
+@app.get("/api/v1/bg/{name}", tags=["Meeting UI"])
+async def background_image(name: str) -> FileResponse:
+    stem = name.removesuffix(".jpg")
+    if stem not in _ALLOWED_BG:
+        raise HTTPException(status_code=404)
+    path = _PUBLIC_DIR / "backgrounds" / f"{stem}.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
 
 
 # ── Meeting page ──────────────────────────────────────────────────────────────

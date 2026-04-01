@@ -1422,6 +1422,71 @@ class WebRTCMeetingAPI {
         transition:background .15s;
       }
       .wrtc-invite-close:hover{background:rgba(255,255,255,.14)}
+
+      /* ── VIRTUAL BACKGROUND ── */
+      .wrtc-btn.vbg-active{background:rgba(138,180,248,.18);color:#8ab4f8}
+      .wrtc-vbg-overlay{
+        position:absolute;inset:0;z-index:300;
+        background:rgba(0,0,0,.55);backdrop-filter:blur(3px);
+        display:flex;align-items:flex-end;justify-content:center;
+      }
+      .wrtc-vbg-panel{
+        background:#2d2e31;border-radius:16px 16px 0 0;
+        padding:20px 20px 24px;width:100%;max-width:560px;
+        box-shadow:0 -8px 32px rgba(0,0,0,.6);
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+        animation:wrtc-vbg-up .22s cubic-bezier(.4,0,.2,1);
+      }
+      @keyframes wrtc-vbg-up{from{transform:translateY(100%)}to{transform:translateY(0)}}
+      .wrtc-vbg-header{
+        display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;
+      }
+      .wrtc-vbg-title{font-size:15px;font-weight:600;color:#e8eaed}
+      .wrtc-vbg-close{
+        background:none;border:none;color:rgba(255,255,255,.5);cursor:pointer;
+        font-size:20px;line-height:1;padding:0 4px;border-radius:6px;
+        transition:color .15s;
+      }
+      .wrtc-vbg-close:hover{color:#e8eaed}
+      .wrtc-vbg-grid{
+        display:grid;grid-template-columns:repeat(5,1fr);gap:10px;
+      }
+      .wrtc-vbg-opt{
+        display:flex;flex-direction:column;align-items:center;gap:6px;
+        cursor:pointer;
+      }
+      .wrtc-vbg-thumb{
+        width:100%;aspect-ratio:16/9;border-radius:10px;
+        border:2px solid transparent;
+        transition:border-color .15s,transform .12s;
+        object-fit:cover;display:block;
+      }
+      img.wrtc-vbg-thumb{background:#3c4043}
+      .wrtc-vbg-thumb:hover,.wrtc-vbg-none-icon:hover{transform:scale(1.05)}
+      .wrtc-vbg-opt.active .wrtc-vbg-thumb,
+      .wrtc-vbg-opt.active .wrtc-vbg-none-icon{border-color:#8ab4f8}
+      .wrtc-vbg-label{font-size:11px;color:rgba(255,255,255,.55);text-align:center}
+      .wrtc-vbg-opt.active .wrtc-vbg-label{color:#8ab4f8;font-weight:600}
+      .wrtc-vbg-none-icon{
+        width:100%;aspect-ratio:16/9;border-radius:10px;
+        border:2px solid rgba(255,255,255,.15);background:#1e1f22;
+        display:flex;align-items:center;justify-content:center;
+        font-size:22px;color:rgba(255,255,255,.3);
+        transition:border-color .15s,transform .12s;box-sizing:border-box;
+      }
+      .wrtc-vbg-blur-thumb{
+        width:100%;aspect-ratio:16/9;border-radius:10px;
+        border:2px solid transparent;
+        background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+        display:flex;align-items:center;justify-content:center;
+        transition:border-color .15s,transform .12s;box-sizing:border-box;
+      }
+      .wrtc-vbg-opt.active .wrtc-vbg-blur-thumb{border-color:#8ab4f8}
+      .wrtc-vbg-blur-thumb:hover{transform:scale(1.05)}
+      .wrtc-vbg-status{
+        margin-top:14px;font-size:12px;color:rgba(255,255,255,.4);
+        text-align:center;min-height:16px;
+      }
     </style>
 
     <div class="wrtc" id="wrtc-root">
@@ -1686,6 +1751,13 @@ class WebRTCMeetingAPI {
           <span>Participants</span>
         </div>
         <div class="wrtc-more-divider"></div>
+        <div class="wrtc-more-item" id="wrtc-more-vbg">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
+          </svg>
+          <span id="wrtc-more-vbg-label">Virtual Background</span>
+        </div>
+        <div class="wrtc-more-divider"></div>
         <div class="wrtc-more-item" id="wrtc-more-invite">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
@@ -1695,6 +1767,43 @@ class WebRTCMeetingAPI {
       </div>
 
       <div class="wrtc-toast" id="wrtc-toast"></div>
+
+      <!-- Virtual Background Panel -->
+      <div class="wrtc-vbg-overlay" id="wrtc-vbg-overlay" style="display:none">
+        <div class="wrtc-vbg-panel" id="wrtc-vbg-panel">
+          <div class="wrtc-vbg-header">
+            <span class="wrtc-vbg-title">Virtual Background</span>
+            <button class="wrtc-vbg-close" id="wrtc-vbg-close">&times;</button>
+          </div>
+          <div class="wrtc-vbg-grid">
+            <div class="wrtc-vbg-opt active" data-bg="none">
+              <div class="wrtc-vbg-none-icon">&#10005;</div>
+              <span class="wrtc-vbg-label">None</span>
+            </div>
+            <div class="wrtc-vbg-opt" data-bg="blur">
+              <div class="wrtc-vbg-blur-thumb">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="rgba(255,255,255,.85)">
+                  <path d="M6 13c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm0 4c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm0-8c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm-3 6.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zM12 13c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm6 0c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm3 2.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zM9 13.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm6 0c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5z"/>
+                </svg>
+              </div>
+              <span class="wrtc-vbg-label">Blur</span>
+            </div>
+            <div class="wrtc-vbg-opt" data-bg="office">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/office.jpg" alt="Office" crossorigin="anonymous">
+              <span class="wrtc-vbg-label">Office</span>
+            </div>
+            <div class="wrtc-vbg-opt" data-bg="nature">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/nature.jpg" alt="Nature" crossorigin="anonymous">
+              <span class="wrtc-vbg-label">Nature</span>
+            </div>
+            <div class="wrtc-vbg-opt" data-bg="library">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/library.jpg" alt="Library" crossorigin="anonymous">
+              <span class="wrtc-vbg-label">Library</span>
+            </div>
+          </div>
+          <div class="wrtc-vbg-status" id="wrtc-vbg-status"></div>
+        </div>
+      </div>
     </div>`;
 
     // Inject branding logo (embed-only — only present when logoUrl was passed)
@@ -1762,6 +1871,12 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-share").addEventListener("click", () => this._toggleScreenShare());
     document.getElementById("wrtc-btn-rec").addEventListener("click",   () => this._toggleRecording());
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
+    document.getElementById("wrtc-vbg-close").addEventListener("click", () => this._closeVBGPanel());
+    document.getElementById("wrtc-vbg-overlay").addEventListener("click", () => this._closeVBGPanel());
+    document.getElementById("wrtc-vbg-panel").addEventListener("click", e => e.stopPropagation());
+    document.querySelectorAll(".wrtc-vbg-opt").forEach(el => {
+      el.addEventListener("click", () => this._selectVBG(el.dataset.bg));
+    });
     // 3-dot more menu
     document.getElementById("wrtc-btn-more").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1791,6 +1906,10 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-more-invite").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
       this._showInvite();
+    });
+    document.getElementById("wrtc-more-vbg").addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+      this._toggleVBGPanel();
     });
     // Close more menu on outside click
     document.addEventListener("click", () => {
@@ -3874,6 +3993,218 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-cancel-leave-btn").addEventListener("click", () => overlay.remove());
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // VIRTUAL BACKGROUND
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _toggleVBGPanel() {
+    const overlay = document.getElementById("wrtc-vbg-overlay");
+    if (!overlay) return;
+    const open = overlay.style.display !== "none";
+    if (open) { this._closeVBGPanel(); return; }
+    overlay.style.display = "flex";
+    this._refreshVBGPanel();
+  }
+
+  _closeVBGPanel() {
+    const overlay = document.getElementById("wrtc-vbg-overlay");
+    if (overlay) overlay.style.display = "none";
+  }
+
+  _refreshVBGPanel() {
+    document.querySelectorAll(".wrtc-vbg-opt").forEach(el => {
+      el.classList.toggle("active", el.dataset.bg === this._bgFilter);
+    });
+  }
+
+  async _selectVBG(type) {
+    if (type === this._bgFilter) return;
+    this._bgFilter = type;
+    this._refreshVBGPanel();
+    sessionStorage.setItem("wrtc_bg_filter_" + this.roomName, type);
+    const statusEl = document.getElementById("wrtc-vbg-status");
+    const label    = document.getElementById("wrtc-more-vbg-label");
+
+    if (type === "none") {
+      await this._disableVirtualBg();
+      if (statusEl) statusEl.textContent = "";
+      if (label) label.textContent = "Virtual Background";
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = "Loading background model…";
+    if (label) label.textContent = "Virtual Background ✓";
+    try {
+      await this._enableVirtualBg(type);
+      if (statusEl) statusEl.textContent = "";
+    } catch (e) {
+      console.warn("[VBG] failed:", e);
+      if (statusEl) statusEl.textContent = "Could not load background model — using normal video.";
+      this._bgFilter = "none";
+      this._refreshVBGPanel();
+      if (label) label.textContent = "Virtual Background";
+      await this._disableVirtualBg();
+    }
+  }
+
+  async _enableVirtualBg(type) {
+    // Pre-load background image (not needed for blur)
+    if (type !== "blur" && !this._bgImages[type]) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = () => rej(new Error("bg image load failed"));
+        img.src = `${this._httpBase}/api/v1/bg/${type}.jpg`;
+      });
+      this._bgImages[type] = img;
+    }
+
+    // Lazy-load MediaPipe Selfie Segmentation from CDN
+    await this._loadMediaPipe();
+
+    // Init the segmentation model once
+    if (!this._selfieSegmentation) {
+      const seg = new window.SelfieSegmentation({
+        locateFile: f =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/${f}`
+      });
+      seg.setOptions({ modelSelection: 0, selfieMode: false });
+      seg.onResults(r => this._onSegResults(r));
+      await seg.initialize();
+      this._selfieSegmentation = seg;
+    }
+
+    // Hidden source video — feeds raw camera into MediaPipe
+    if (!this._filterSrcVid) {
+      const vid = document.createElement("video");
+      vid.autoplay = true; vid.muted = true; vid.playsInline = true;
+      vid.style.cssText = "position:fixed;width:1px;height:1px;top:0;left:0;opacity:0;pointer-events:none";
+      document.body.appendChild(vid);
+      this._filterSrcVid = vid;
+    }
+    this._filterSrcVid.srcObject = this._localStream;
+    await this._filterSrcVid.play().catch(() => {});
+
+    // Output canvas — 480×270 keeps quality acceptable while halving pixel count vs 640×360
+    const W = 480, H = 270;
+    if (!this._filterCanvas) {
+      this._filterCanvas = document.createElement("canvas");
+      this._filterCanvas.width  = W;
+      this._filterCanvas.height = H;
+      this._filterCtx = this._filterCanvas.getContext("2d");
+    }
+
+    // Capture the canvas as a MediaStream
+    if (this._filterStream) this._filterStream.getTracks().forEach(t => t.stop());
+    this._filterStream = this._filterCanvas.captureStream(25);
+
+    // Replace video track in all active peer connections
+    const newTrack = this._filterStream.getVideoTracks()[0];
+    await this._replaceVideoTrackInPeers(newTrack);
+
+    // Point the local preview at the filtered stream
+    const lv = document.getElementById("wrtc-local-video");
+    if (lv) lv.srcObject = this._filterStream;
+
+    // Start the per-frame processing loop
+    this._stopFilterLoop();
+    this._filterTick();
+  }
+
+  async _disableVirtualBg() {
+    this._stopFilterLoop();
+
+    if (this._filterStream) {
+      this._filterStream.getTracks().forEach(t => t.stop());
+      this._filterStream = null;
+    }
+
+    // Restore original camera track in all peers
+    const origTrack = this._localStream?.getVideoTracks()[0] ?? null;
+    await this._replaceVideoTrackInPeers(origTrack);
+
+    // Restore local preview
+    const lv = document.getElementById("wrtc-local-video");
+    if (lv) lv.srcObject = this._localStream;
+  }
+
+  _stopFilterLoop() {
+    if (this._filterAnimId) {
+      cancelAnimationFrame(this._filterAnimId);
+      this._filterAnimId = null;
+    }
+  }
+
+  async _filterTick() {
+    if (this._bgFilter === "none" || !this._filterSrcVid || !this._selfieSegmentation) return;
+    const now = performance.now();
+    // Throttle to 20fps — avoids CPU saturation on mid/low-end devices
+    if (this._filterSrcVid.readyState >= 2 &&
+        (!this._lastFilterTime || now - this._lastFilterTime >= 50)) {
+      this._lastFilterTime = now;
+      try { await this._selfieSegmentation.send({ image: this._filterSrcVid }); }
+      catch (_) { /* drop frame */ }
+    }
+    this._filterAnimId = requestAnimationFrame(() => this._filterTick());
+  }
+
+  _onSegResults(results) {
+    const ctx = this._filterCtx;
+    if (!ctx || !this._filterCanvas) return;
+    const W = this._filterCanvas.width;
+    const H = this._filterCanvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Step 1: draw raw camera frame — no mirroring here.
+    // The local <video> already has CSS scaleX(-1) for the selfie flip;
+    // the stream sent to remote peers must be in natural orientation.
+    ctx.drawImage(results.image, 0, 0, W, H);
+
+    // Step 2: mask keeps only person pixels (mask and image share same orientation).
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(results.segmentationMask, 0, 0, W, H);
+
+    // Step 3: paint replacement background behind the person.
+    ctx.globalCompositeOperation = "destination-over";
+    if (this._bgFilter === "blur") {
+      ctx.filter = "blur(14px)";
+      ctx.drawImage(results.image, 0, 0, W, H);
+      ctx.filter = "none";
+    } else {
+      const bgImg = this._bgImages[this._bgFilter];
+      if (bgImg && bgImg.complete) {
+        ctx.drawImage(bgImg, 0, 0, W, H);
+      } else {
+        ctx.fillStyle = "#202124";
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  async _replaceVideoTrackInPeers(newTrack) {
+    for (const pc of Object.values(this._peerConnections)) {
+      const sender = pc.getSenders().find(s => s.track?.kind === "video");
+      if (sender) {
+        try { await sender.replaceTrack(newTrack); } catch (_) {}
+      }
+    }
+  }
+
+  _loadMediaPipe() {
+    return new Promise((resolve, reject) => {
+      if (window.SelfieSegmentation) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js";
+      s.crossOrigin = "anonymous";
+      s.onload  = resolve;
+      s.onerror = () => reject(new Error("Failed to load MediaPipe from CDN"));
+      document.head.appendChild(s);
+    });
+  }
+
   _doLeave() {
     this._isLeaving = true;
     // Replace parentNode content with leaving overlay so it's removed when React navigates
@@ -3897,6 +4228,8 @@ class WebRTCMeetingAPI {
     this._ws?.close();
     this._localStream?.getTracks().forEach(t => t.stop());
     this._filterStream?.getTracks().forEach(t => t.stop());
+    this._stopFilterLoop();
+    if (this._filterSrcVid) { this._filterSrcVid.srcObject = null; this._filterSrcVid.remove(); this._filterSrcVid = null; }
     this._shareStream?.getTracks().forEach(t => t.stop());
     if (this._isRecording) this._mediaRecorder?.stop();
     clearInterval(this._clockTimer);
