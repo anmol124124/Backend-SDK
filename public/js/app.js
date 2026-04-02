@@ -2106,7 +2106,20 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-btn-share").classList.remove("on-air");
       document.getElementById("wrtc-ico-share").style.display      = "";
       document.getElementById("wrtc-ico-share-stop").style.display  = "none";
+      // Restore camera to the state it was in before sharing started
+      const wasOn = this._camEnabledBeforeShare !== false;
+      this._camEnabledBeforeShare = undefined;
+      if (wasOn && !this._camEnabled) {
+        this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
+        this._camEnabled = true;
+        document.getElementById("wrtc-btn-cam").classList.remove("muted");
+        document.getElementById("wrtc-ico-cam").style.display     = "";
+        document.getElementById("wrtc-ico-cam-off").style.display = "none";
+        document.getElementById("wrtc-pip-avatar").style.display  = "none";
+        this._sendWS({ type: "cam-state", payload: { enabled: true } });
+      }
       document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
+      document.getElementById("wrtc-local-video").style.display = this._camEnabled ? "block" : "none";
       this._presenterUserId = null;
       this._clearPresenter();
       this._sendWS({ type: "presenting", payload: { active: false } });
@@ -2123,6 +2136,18 @@ class WebRTCMeetingAPI {
         document.getElementById("wrtc-btn-share").classList.add("on-air");
         document.getElementById("wrtc-ico-share").style.display     = "none";
         document.getElementById("wrtc-ico-share-stop").style.display = "";
+        // Disable camera so participants only see the shared screen, not the webcam.
+        // Save current cam state so we can restore it when sharing stops.
+        this._camEnabledBeforeShare = this._camEnabled;
+        if (this._camEnabled) {
+          this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+          this._camEnabled = false;
+          document.getElementById("wrtc-btn-cam").classList.add("muted");
+          document.getElementById("wrtc-ico-cam").style.display     = "none";
+          document.getElementById("wrtc-ico-cam-off").style.display = "";
+          document.getElementById("wrtc-pip-avatar").style.display  = "flex";
+          this._sendWS({ type: "cam-state", payload: { enabled: false } });
+        }
         this._setLocalPresenter();
         // Delay the "presenting" signal so remote peers receive the first
         // screen keyframe before they expand the tile (avoids blank/camera flash)
@@ -2138,59 +2163,32 @@ class WebRTCMeetingAPI {
   }
 
   _waitForPresenterVideo(userId) {
-    const tile  = document.getElementById(`wrtc-tile-${userId}`);
-    const video = tile?.querySelector("video");
+    const _trySet = () => {
+      if (this._presenterUserId !== userId) return; // share was cancelled
+      this._setPresenter(userId);
+    };
 
-    if (!video) {
-      // Tile not in DOM yet (late-joiner case) — poll until it appears
+    const tile = document.getElementById(`wrtc-tile-${userId}`);
+    if (!tile) {
+      // Tile not in DOM yet (peer hasn't connected yet) — poll until it appears
       let elapsed = 0;
       const poll = setInterval(() => {
         elapsed += 100;
-        const t = document.getElementById(`wrtc-tile-${userId}`);
-        const v = t?.querySelector("video");
-        if (v) {
+        if (document.getElementById(`wrtc-tile-${userId}`)) {
           clearInterval(poll);
-          // Late-joiner: video already carries the screen-share track from the start,
-          // so a resize event will never fire. Expand as soon as video is playing.
-          if (v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-            this._setPresenter(userId);
-          } else {
-            let done = false;
-            const expand = () => { if (done) return; done = true; this._setPresenter(userId); };
-            v.addEventListener("playing", expand, { once: true });
-            setTimeout(expand, 5000);
-          }
+          // Give the track a brief moment to arrive, then switch layout
+          setTimeout(_trySet, 300);
         } else if (elapsed >= 5000) {
           clearInterval(poll);
-          this._setPresenter(userId);
+          _trySet();
         }
       }, 100);
       return;
     }
 
-    // Tile exists — existing participant: track replacement is in progress.
-    // If video is not yet playing at all, wait for it to start first.
-    if (video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
-      const onStart = () => {
-        video.removeEventListener("playing", onStart);
-        this._waitForPresenterVideo(userId);
-      };
-      video.addEventListener("playing", onStart, { once: true });
-      return;
-    }
-
-    // Camera is already playing — wait for the video dimensions to change,
-    // which signals that the screen share frames have actually arrived.
-    let done = false;
-    const expand = () => {
-      if (done) return;
-      done = true;
-      this._setPresenter(userId);
-    };
-
-    video.addEventListener("resize", expand, { once: true });
-    // Fallback for same-resolution screens or slow networks — reduced from 5000ms
-    setTimeout(expand, 1500);
+    // Tile exists — switch layout immediately (video updates naturally as
+    // the screen share track arrives via replaceTrack, no resize event needed)
+    setTimeout(_trySet, 200);
   }
 
   _setPresenter(userId) {
@@ -4132,12 +4130,15 @@ class WebRTCMeetingAPI {
     const newTrack = this._filterStream.getVideoTracks()[0];
     await this._replaceVideoTrackInPeers(newTrack);
 
-    // Point the local preview at the filtered stream
+    // Point the local preview at the filtered stream.
+    // Listen for canplay too — browsers pause the element when srcObject changes,
+    // so a single play() call can fail silently if the stream has no frames yet.
     const lv = document.getElementById("wrtc-local-video");
     if (lv) {
       lv.srcObject = this._filterStream;
       lv.style.display = "block";
       document.getElementById("wrtc-pip-avatar").style.display = "none";
+      lv.addEventListener("canplay", () => lv.play().catch(() => {}), { once: true });
       lv.play().catch(() => {});
     }
 

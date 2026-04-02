@@ -164,7 +164,11 @@ async def sdk_join(
     room_name: str,
     db: AsyncSession = Depends(get_db),
 ) -> SdkJoinResponse:
-    # Check project_meetings first (meetings created from embed HTML)
+    from fastapi import HTTPException
+    from app.modules.public_meeting.models import PublicMeeting
+    from app.core.rsa_tokens import create_guest_token
+
+    # 1. Check project_meetings (embed HTML meetings)
     pm_result = await db.execute(
         select(ProjectMeeting).where(ProjectMeeting.room_name == room_name)
     )
@@ -178,13 +182,29 @@ async def sdk_join(
             name=pm.title,
             logo_url=proj.logo_url if proj else None,
         )
-    # Fall back to project room_name (legacy)
+
+    # 2. Check public_meetings (public-meet dashboard meetings)
+    pub_result = await db.execute(
+        select(PublicMeeting).where(PublicMeeting.room_code == room_name)
+    )
+    pub = pub_result.scalar_one_or_none()
+    if pub:
+        if not pub.is_active:
+            raise HTTPException(status_code=410, detail="This meeting has ended")
+        guest_token = create_guest_token(name="Guest", room_code=pub.room_code)
+        return SdkJoinResponse(
+            guest_token=guest_token,
+            room_name=pub.room_code,
+            name=pub.name,
+            logo_url=None,
+        )
+
+    # 3. Fall back to project room_name (legacy)
     result = await db.execute(
         select(Project).where(Project.room_name == room_name)
     )
     project = result.scalar_one_or_none()
     if not project:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Meeting not found")
     return SdkJoinResponse(
         guest_token=_make_guest_token(project.id),
