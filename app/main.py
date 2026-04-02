@@ -97,7 +97,10 @@ async def background_image(name: str) -> FileResponse:
         path,
         media_type="image/jpeg",
         headers={
-            "Access-Control-Allow-Origin": "*",
+            # Vary: Origin tells caches to store separate entries per requesting
+            # origin, preventing a response with a specific ACAO header from being
+            # served to a different origin (cache-poisoning scenario).
+            "Vary": "Origin",
             "Cache-Control": "public, max-age=86400",
         },
     )
