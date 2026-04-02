@@ -1786,15 +1786,15 @@ class WebRTCMeetingAPI {
               <span class="wrtc-vbg-label">Blur</span>
             </div>
             <div class="wrtc-vbg-opt" data-bg="office">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/office.jpg" alt="Office" crossorigin="anonymous">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/office.jpg?v=2" alt="Office" crossorigin="anonymous">
               <span class="wrtc-vbg-label">Office</span>
             </div>
             <div class="wrtc-vbg-opt" data-bg="nature">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/nature.jpg" alt="Nature" crossorigin="anonymous">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/nature.jpg?v=2" alt="Nature" crossorigin="anonymous">
               <span class="wrtc-vbg-label">Nature</span>
             </div>
             <div class="wrtc-vbg-opt" data-bg="library">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/library.jpg" alt="Library" crossorigin="anonymous">
+              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/library.jpg?v=2" alt="Library" crossorigin="anonymous">
               <span class="wrtc-vbg-label">Library</span>
             </div>
           </div>
@@ -4185,7 +4185,7 @@ class WebRTCMeetingAPI {
       await new Promise((res, rej) => {
         img.onload = res;
         img.onerror = () => rej(new Error("bg image load failed"));
-        img.src = `${this._httpBase}/api/v1/bg/${type}.jpg`;
+        img.src = `${this._httpBase}/api/v1/bg/${type}.jpg?v=2`;
       });
       this._bgImages[type] = img;
     }
