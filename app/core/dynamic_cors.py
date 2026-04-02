@@ -87,7 +87,10 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         if origin and allowed:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
+            # Don't override if the route already set its own ACAO header
+            # (e.g. the /api/v1/bg/ image route explicitly returns "*")
+            if "access-control-allow-origin" not in response.headers:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
 
         return response
