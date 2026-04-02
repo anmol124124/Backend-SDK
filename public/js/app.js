@@ -793,10 +793,10 @@ class WebRTCMeetingAPI {
       if (chatContent) chatContent.style.display = "none";
     }
 
-    // Screen share — hide button if disabled
-    const shareBtn = document.getElementById("wrtc-btn-share");
+    // Screen share — hide menu item if disabled
+    const shareMenuItem = document.getElementById("wrtc-more-share");
     if (!isHost && s.allow_screen_share === false) {
-      if (shareBtn) shareBtn.style.display = "none";
+      if (shareMenuItem) shareMenuItem.style.display = "none";
     }
 
     // Participants list — hide people panel tab if disabled
@@ -1115,6 +1115,8 @@ class WebRTCMeetingAPI {
         transition:background .12s;
       }
       .wrtc-more-item:hover{background:rgba(255,255,255,.08)}
+      .wrtc-more-item.on-air{color:#ea4335}
+      .wrtc-more-item.on-air svg{opacity:1}
       .wrtc-more-item svg{flex-shrink:0;opacity:.8}
       .wrtc-more-divider{height:1px;background:rgba(255,255,255,.1);margin:4px 0}
       .wrtc-menu-badge{
@@ -1655,26 +1657,13 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
-        <!-- Screen Share -->
-        <button class="wrtc-btn" id="wrtc-btn-share" title="Share your screen">
-          <svg id="wrtc-ico-share" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
-            <path d="M10 13l2-2 2 2 1-1-3-3-3 3z" transform="translate(0 -1)"/>
-          </svg>
-          <svg id="wrtc-ico-share-stop" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-            <path d="M21.79 18l2 2H24v-2h-2.21zM20 18V6H6.21l2 2H20v8.79l-1.1-1.1L20 18zM0 2.81L1.81 4.6c-.01.13-.01.27-.01.4v12c0 1.1.89 2 2 2H0v2h24v-2h-2.21l2 2L22.21 22 1.79 1 0 2.81zM4 6.6L6 8.6V16h7.4l2 2H4c-1.1 0-2-.9-2-2V6c0-.14.01-.27.01-.4z"/>
-          </svg>
-        </button>
-
-        <!-- Record -->
-        <button class="wrtc-btn" id="wrtc-btn-rec" title="Record meeting">
+        <!-- Chat (visible toolbar button) -->
+        <button class="wrtc-btn" id="wrtc-btn-chat" title="Chat" style="position:relative">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="12" r="6" id="wrtc-rec-circle"/>
-            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
           </svg>
+          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn" style="display:none"></div>
         </button>
-
-        <div class="wrtc-divider"></div>
 
         <!-- Raise Hand -->
         <button class="wrtc-btn" id="wrtc-btn-hand" title="Raise hand">
@@ -1717,7 +1706,6 @@ class WebRTCMeetingAPI {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
             <circle cx="12" cy="5"  r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
           </svg>
-          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn" style="display:none"></div>
         </button>
 
         <!-- Leave -->
@@ -1730,20 +1718,29 @@ class WebRTCMeetingAPI {
       </div>
 
       <!-- Hidden legacy buttons kept for JS compatibility -->
-      <button id="wrtc-btn-chat"   style="display:none"></button>
+      <button id="wrtc-btn-share"  style="display:none"></button>
+      <button id="wrtc-btn-rec"    style="display:none"></button>
       <button id="wrtc-btn-people" style="display:none"></button>
       <button id="wrtc-btn-filter" style="display:none"></button>
       <button id="wrtc-btn-invite" style="display:none"></button>
 
       <!-- 3-dot dropdown menu -->
       <div class="wrtc-more-menu" id="wrtc-more-menu" style="display:none">
-        <div class="wrtc-more-item" id="wrtc-more-chat">
+        <div class="wrtc-more-item" id="wrtc-more-share">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
+            <path d="M20 18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
+            <path d="M10 13l2-2 2 2 1-1-3-3-3 3z" transform="translate(0 -1)"/>
           </svg>
-          <span>Chat</span>
-          <div class="wrtc-btn-badge wrtc-menu-badge" id="wrtc-chat-badge-menu" style="display:none;position:relative;top:0;right:0;margin-left:auto"></div>
+          <span id="wrtc-more-share-label">Share Screen</span>
         </div>
+        <div class="wrtc-more-item" id="wrtc-more-rec">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="6" id="wrtc-rec-circle"/>
+            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span id="wrtc-more-rec-label">Record</span>
+        </div>
+        <div class="wrtc-more-divider"></div>
         <div class="wrtc-more-item" id="wrtc-more-people">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
@@ -1868,8 +1865,7 @@ class WebRTCMeetingAPI {
     });
     document.getElementById("wrtc-btn-mic").addEventListener("click",   () => this._toggleMic());
     document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
-    document.getElementById("wrtc-btn-share").addEventListener("click", () => this._toggleScreenShare());
-    document.getElementById("wrtc-btn-rec").addEventListener("click",   () => this._toggleRecording());
+    document.getElementById("wrtc-btn-chat").addEventListener("click",  () => this._togglePanel("chat"));
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
     document.getElementById("wrtc-vbg-close").addEventListener("click", () => this._closeVBGPanel());
     document.getElementById("wrtc-vbg-overlay").addEventListener("click", () => this._closeVBGPanel());
@@ -1895,9 +1891,13 @@ class WebRTCMeetingAPI {
       menu.style.bottom = (window.innerHeight - rect.top + 8) + "px";
       menu.style.top    = "";
     });
-    document.getElementById("wrtc-more-chat").addEventListener("click", () => {
+    document.getElementById("wrtc-more-share").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
-      this._togglePanel("chat");
+      this._toggleScreenShare();
+    });
+    document.getElementById("wrtc-more-rec").addEventListener("click", () => {
+      document.getElementById("wrtc-more-menu").style.display = "none";
+      this._toggleRecording();
     });
     document.getElementById("wrtc-more-people").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
@@ -2103,9 +2103,12 @@ class WebRTCMeetingAPI {
       this._isSharing   = false;
       sessionStorage.removeItem('wrtc_sharing_' + this.roomName);
       await this._restoreCameraTrack();
-      document.getElementById("wrtc-btn-share").classList.remove("on-air");
-      document.getElementById("wrtc-ico-share").style.display      = "";
-      document.getElementById("wrtc-ico-share-stop").style.display  = "none";
+      this._renegotiateAll(); // renegotiate so peers get updated SDP for camera track
+      document.getElementById("wrtc-more-share").classList.remove("on-air");
+      document.getElementById("wrtc-more-share-label").textContent = "Share Screen";
+      // Restore cam button and VBG menu item — hidden during screen share
+      document.getElementById("wrtc-btn-cam").style.display = "";
+      document.getElementById("wrtc-more-vbg").style.display = "";
       // Restore camera to the state it was in before sharing started
       const wasOn = this._camEnabledBeforeShare !== false;
       this._camEnabledBeforeShare = undefined;
@@ -2133,9 +2136,12 @@ class WebRTCMeetingAPI {
         const screenTrack = this._shareStream.getVideoTracks()[0];
         screenTrack.onended = () => { if (this._isSharing) this._toggleScreenShare(); };
         await this._replaceVideoTrack(screenTrack);
-        document.getElementById("wrtc-btn-share").classList.add("on-air");
-        document.getElementById("wrtc-ico-share").style.display     = "none";
-        document.getElementById("wrtc-ico-share-stop").style.display = "";
+        this._renegotiateAll(); // renegotiate so peers get updated SDP for screen track
+        document.getElementById("wrtc-more-share").classList.add("on-air");
+        document.getElementById("wrtc-more-share-label").textContent = "Stop Sharing";
+        // Hide cam button and VBG option — not relevant while screen sharing
+        document.getElementById("wrtc-btn-cam").style.display = "none";
+        document.getElementById("wrtc-more-vbg").style.display = "none";
         // Disable camera so participants only see the shared screen, not the webcam.
         // Save current cam state so we can restore it when sharing stops.
         this._camEnabledBeforeShare = this._camEnabled;
@@ -2197,6 +2203,11 @@ class WebRTCMeetingAPI {
     stage?.classList.add("presenting");
     thumbs.innerHTML = "";
 
+    // Sync local video to the active stream (filter or raw camera) before
+    // building thumbs so _addThumb reads the correct srcObject for the local tile.
+    const lv = document.getElementById("wrtc-local-video");
+    if (lv) lv.srcObject = this._activeVideoStream();
+
     const presenterName = this._displayName(userId);
 
     document.querySelectorAll(".wrtc-tile").forEach(tile => {
@@ -2204,6 +2215,10 @@ class WebRTCMeetingAPI {
         const badge = tile.querySelector(".wrtc-presenter-badge");
         if (badge) badge.textContent = `${presenterName} is presenting`;
         tile.classList.add("presenter");
+        // Hide the presenter's avatar — the screen share replaces their camera
+        // track so the video element shows the shared screen, not a blank feed.
+        const av = tile.querySelector(".wrtc-tile-avatar");
+        if (av) av.classList.remove("visible");
       } else {
         this._addThumb(tile, thumbs);
         tile.style.display = "none";
@@ -2242,32 +2257,64 @@ class WebRTCMeetingAPI {
     tile.append(video, badge, label);
     grid.appendChild(tile);
 
-    // Move remote tiles to thumbnail strip
-    document.querySelectorAll(".wrtc-tile:not(#wrtc-local-share-tile)").forEach(t => {
+    // Move only REMOTE tiles to the thumbnail strip — the presenter does not
+    // need to see their own tile; only other participants appear on the right.
+    document.querySelectorAll(".wrtc-tile:not(#wrtc-local-share-tile):not(#wrtc-local-tile)").forEach(t => {
       this._addThumb(t, thumbs);
       t.style.display = "none";
     });
+    // Hide the local tile entirely during screen share
+    document.getElementById("wrtc-local-tile").style.display = "none";
     thumbs.style.display = "flex";
-
-    // PiP switches back to camera so you can see yourself
-    document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
   }
 
   _addThumb(tile, thumbs) {
     const vid = tile.querySelector("video");
     if (!vid) return;
+    // For the local tile, always use the active stream (filter or raw camera)
+    // so virtual backgrounds are visible in the thumbnail strip.
+    const srcStream = (tile.id === "wrtc-local-tile")
+      ? this._activeVideoStream()
+      : vid.srcObject;
+    if (!srcStream) return;
+    const userId = tile.id.replace("wrtc-tile-", "") || "local";
     const wrap      = document.createElement("div");
     wrap.className  = "wrtc-thumb-tile";
+    wrap.dataset.userId = userId;
     const tv        = document.createElement("video");
     tv.autoplay     = true;
     tv.playsInline  = true;
     tv.muted        = true;
-    tv.srcObject    = vid.srcObject;
+    tv.srcObject    = srcStream;
     const lbl       = document.createElement("div");
     lbl.className   = "wrtc-thumb-label";
     lbl.textContent = tile.querySelector(".wrtc-tile-label")?.textContent || "";
     wrap.append(tv, lbl);
     thumbs.appendChild(wrap);
+    // Canvas captureStreams require explicit play() — autoplay alone is not
+    // reliable for programmatically created video elements.
+    tv.play().catch(() => {});
+  }
+
+  // Same as _addThumb but tags the wrap with a specific userId for late-joiner detection.
+  _addThumbTagged(tile, thumbs, userId) {
+    const vid = tile.querySelector("video");
+    if (!vid || !vid.srcObject) return null;
+    const wrap     = document.createElement("div");
+    wrap.className = "wrtc-thumb-tile";
+    wrap.dataset.userId = userId;
+    const tv       = document.createElement("video");
+    tv.autoplay    = true;
+    tv.playsInline = true;
+    tv.muted       = true;
+    tv.srcObject   = vid.srcObject;
+    const lbl      = document.createElement("div");
+    lbl.className  = "wrtc-thumb-label";
+    lbl.textContent = tile.querySelector(".wrtc-tile-label")?.textContent || "";
+    wrap.append(tv, lbl);
+    thumbs.appendChild(wrap);
+    tv.play().catch(() => {});
+    return wrap;
   }
 
   _clearPresenter() {
@@ -2279,6 +2326,12 @@ class WebRTCMeetingAPI {
     document.querySelectorAll(".wrtc-tile").forEach(tile => {
       tile.classList.remove("presenter");
       tile.style.display = "";
+    });
+    // Re-apply avatar visibility from known cam states so avatar is correct
+    // after we hid it during the presentation (e.g. camera was off throughout).
+    Object.entries(this._camStates).forEach(([uid, enabled]) => {
+      const av = document.getElementById(`wrtc-avatar-${uid}`);
+      if (av) av.classList.toggle("visible", !enabled);
     });
     this._updateGrid();
   }
@@ -2306,7 +2359,8 @@ class WebRTCMeetingAPI {
       this._recordTabStream = null;
       this._recordAudioCtx?.close();
       this._recordAudioCtx = null;
-      document.getElementById("wrtc-btn-rec").classList.remove("active-feature");
+      document.getElementById("wrtc-more-rec").classList.remove("on-air");
+      document.getElementById("wrtc-more-rec-label").textContent = "Record";
       document.getElementById("wrtc-rec-badge").classList.remove("active");
       document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
       this._toast("Recording saved");
@@ -2357,7 +2411,8 @@ class WebRTCMeetingAPI {
         tabStream.getVideoTracks()[0].onended = () => { if (this._isRecording) this._toggleRecording(); };
         this._mediaRecorder.start(1000);
         this._isRecording = true;
-        document.getElementById("wrtc-btn-rec").classList.add("active-feature");
+        document.getElementById("wrtc-more-rec").classList.add("on-air");
+        document.getElementById("wrtc-more-rec-label").textContent = "Stop Recording";
         document.getElementById("wrtc-rec-badge").classList.add("active");
         document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
         this._toast("Recording started — select this tab to capture everything");
@@ -3297,7 +3352,10 @@ class WebRTCMeetingAPI {
     this._log(`Creating PeerConnection for ${remoteUserId}`);
     const pc = new RTCPeerConnection(this._iceConfig);
 
-    const videoTrack = this._localStream?.getVideoTracks()[0] ?? null;
+    // Use the currently active video track (screen share > filter > camera) so
+    // peers that connect after sharing started receive the correct stream
+    // instead of the stale camera track from _localStream.
+    const videoTrack = this._activeVideoTrack();
     const audioTrack = this._localStream?.getAudioTracks()[0] ?? null;
     if (videoTrack) pc.addTrack(videoTrack, this._localStream);
     if (audioTrack) pc.addTrack(audioTrack, this._localStream);
@@ -3325,6 +3383,11 @@ class WebRTCMeetingAPI {
         // Re-trigger play() on the remote video in case it stalled before connection was ready.
         const videoEl = document.getElementById(`wrtc-vid-${remoteUserId}`);
         if (videoEl && videoEl.srcObject) videoEl.play().catch(() => {});
+        // Re-broadcast presenting state so a rejoining peer learns the current
+        // presentation is active (the initial signal was already consumed).
+        if (this._isSharing) {
+          this._sendWS({ type: "presenting", payload: { active: true } });
+        }
       }
       // Only hard-cleanup on "failed" — "disconnected" is transient and can self-recover.
       // Intentional leaves (host refresh, tab close) are cleaned up by the WS "leave" message.
@@ -3571,8 +3634,11 @@ class WebRTCMeetingAPI {
       case "presenting": {
         const name = this._displayName(from);
         if (payload.active) {
+          const alreadyPresenting = this._presenterUserId === from;
           this._presenterUserId = from;
-          this._toast(`${name} is presenting`);
+          // Only toast on the first announcement — re-broadcasts (triggered when a
+          // participant refreshes and reconnects) should not repeat the toast.
+          if (!alreadyPresenting) this._toast(`${name} is presenting`);
           this._waitForPresenterVideo(from);
         } else {
           if (this._presenterUserId === from) this._presenterUserId = null;
@@ -3787,6 +3853,25 @@ class WebRTCMeetingAPI {
     this._sendWS({ type: "offer", to: remoteUserId, payload: { sdp: pc.localDescription } });
   }
 
+  // Re-send a fresh offer to every connected peer so the SDP reflects the
+  // current track (screen share / filter / camera). Called after any track
+  // swap to let the browser renegotiate codec settings and bandwidth — this
+  // is what makes transitions smoother instead of relying on replaceTrack alone.
+  async _renegotiateAll() {
+    for (const [remoteUserId, pc] of Object.entries(this._peerConnections)) {
+      if (!pc || ["closed", "failed"].includes(pc.connectionState)) continue;
+      // Skip if a negotiation is already in flight — avoids SDP glare.
+      if (pc.signalingState !== "stable") continue;
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        this._sendWS({ type: "offer", to: remoteUserId, payload: { sdp: pc.localDescription } });
+      } catch (e) {
+        this._log(`renegotiate failed [${remoteUserId}]: ${e.message}`, undefined, "warn");
+      }
+    }
+  }
+
   async _flushCandidates(userId) {
     const queued = this._pendingCandidates[userId];
     if (!queued?.length) return;
@@ -3820,6 +3905,9 @@ class WebRTCMeetingAPI {
       if (grid) grid.style.display = "";
     }
     document.getElementById(leavingTileId)?.remove();
+    // Remove this user's thumb from the presentation strip (if active).
+    document.querySelectorAll(`#wrtc-thumbs .wrtc-thumb-tile[data-user-id="${userId}"]`)
+      .forEach(t => t.remove());
     this._updateUserCount(Object.keys(this._peerConnections).length + 1);
     this._updateGrid();
   }
@@ -3909,6 +3997,21 @@ class WebRTCMeetingAPI {
       // Explicitly call play() — Chrome may not honour autoplay on programmatically
       // created video elements after a page reconnect (autoplay policy).
       videoEl.play().catch(() => {});
+    }
+
+    // If presenting mode is active, the thumbs strip was already built.
+    // A tile that arrives late (joiner after share started) won't be in it —
+    // add it now that the stream is wired up and srcObject is non-null.
+    const tile   = document.getElementById(`wrtc-tile-${userId}`);
+    const thumbs = document.getElementById("wrtc-thumbs");
+    if (tile && thumbs?.style.display === "flex") {
+      // Only add if this tile isn't already represented in the strip.
+      const alreadyInThumbs = [...thumbs.querySelectorAll(".wrtc-thumb-tile")]
+        .some(t => t.dataset.userId === userId);
+      if (!alreadyInThumbs) {
+        this._addThumbTagged(tile, thumbs, userId);
+        tile.style.display = "none";
+      }
     }
 
     if (avatarWrap) {
@@ -4129,17 +4232,39 @@ class WebRTCMeetingAPI {
     // Replace video track in all active peer connections
     const newTrack = this._filterStream.getVideoTracks()[0];
     await this._replaceVideoTrackInPeers(newTrack);
+    this._renegotiateAll(); // renegotiate so peers get updated SDP for filter track
 
     // Point the local preview at the filtered stream.
-    // Listen for canplay too — browsers pause the element when srcObject changes,
-    // so a single play() call can fail silently if the stream has no frames yet.
+    // The canvas has no frames yet when srcObject is first set, so play() may
+    // fail or stall. Retry at increasing intervals until the video is playing.
     const lv = document.getElementById("wrtc-local-video");
     if (lv) {
       lv.srcObject = this._filterStream;
       lv.style.display = "block";
       document.getElementById("wrtc-pip-avatar").style.display = "none";
-      lv.addEventListener("canplay", () => lv.play().catch(() => {}), { once: true });
-      lv.play().catch(() => {});
+      const _tryPlay = () => {
+        if (this._bgFilter === "none" || !this._filterStream) return;
+        if (lv.srcObject !== this._filterStream) lv.srcObject = this._filterStream;
+        lv.play().catch(() => {});
+      };
+      _tryPlay();
+      [100, 300, 700].forEach(ms => setTimeout(_tryPlay, ms));
+    }
+
+    // Update local thumb in the right-panel strip (visible when someone else is presenting).
+    // The thumb srcObject was captured at presentation start — we must update it now
+    // so the filter appears in the user's own thumbnail during screen share.
+    const localThumb = document.querySelector(
+      '#wrtc-thumbs .wrtc-thumb-tile[data-user-id="wrtc-local-tile"] video'
+    );
+    if (localThumb) {
+      const _tryThumbPlay = () => {
+        if (this._bgFilter === "none" || !this._filterStream) return;
+        if (localThumb.srcObject !== this._filterStream) localThumb.srcObject = this._filterStream;
+        localThumb.play().catch(() => {});
+      };
+      _tryThumbPlay();
+      [100, 300, 700].forEach(ms => setTimeout(_tryThumbPlay, ms));
     }
 
     // Start the per-frame processing loop
@@ -4158,10 +4283,34 @@ class WebRTCMeetingAPI {
     // Restore original camera track in all peers
     const origTrack = this._localStream?.getVideoTracks()[0] ?? null;
     await this._replaceVideoTrackInPeers(origTrack);
+    this._renegotiateAll(); // renegotiate so peers get updated SDP when filter removed
 
     // Restore local preview
     const lv = document.getElementById("wrtc-local-video");
     if (lv) lv.srcObject = this._localStream;
+
+    // Restore local thumb in right-panel strip to raw camera stream
+    const localThumb = document.querySelector(
+      '#wrtc-thumbs .wrtc-thumb-tile[data-user-id="wrtc-local-tile"] video'
+    );
+    if (localThumb) {
+      localThumb.srcObject = this._localStream;
+      localThumb.play().catch(() => {});
+    }
+  }
+
+  // Returns the video track that should be sent to peers right now.
+  // Priority: screen share > virtual background filter > raw camera.
+  // Used when wiring new peer connections so they receive the correct track
+  // even if they connect after _replaceVideoTrack() was called for existing peers.
+  _activeVideoTrack() {
+    if (this._isSharing && this._shareStream) {
+      return this._shareStream.getVideoTracks()[0] ?? null;
+    }
+    if (this._bgFilter !== "none" && this._filterStream) {
+      return this._filterStream.getVideoTracks()[0] ?? null;
+    }
+    return this._localStream?.getVideoTracks()[0] ?? null;
   }
 
   // Returns the stream that should be shown in the local video preview.
