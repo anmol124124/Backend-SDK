@@ -97,11 +97,12 @@ async def background_image(name: str) -> FileResponse:
         path,
         media_type="image/jpeg",
         headers={
-            # Wildcard is safe here — images are public, no credentials needed.
-            # Vary: Origin prevents CDN/proxy cache poisoning across origins.
-            "Access-Control-Allow-Origin": "*",
-            "Vary": "Origin",
-            "Cache-Control": "public, max-age=86400",
+            # no-store: prevents CDN/proxy from caching this response.
+            # If a CDN caches it once with a specific origin in ACAO it will
+            # serve that wrong header to every other origin. Since the files
+            # are small JPEGs the browser can cache them locally (private) but
+            # no shared cache should ever store them.
+            "Cache-Control": "no-store",
         },
     )
 
@@ -112,6 +113,7 @@ async def background_image(name: str) -> FileResponse:
 
 @app.get("/meet/{room_id}", response_class=HTMLResponse, tags=["Meeting UI"])
 async def meeting_page(room_id: str) -> HTMLResponse:
+    # Never cache the meeting page — it must always load the latest app.js version.
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -140,7 +142,7 @@ async def meeting_page(room_id: str) -> HTMLResponse:
   </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
