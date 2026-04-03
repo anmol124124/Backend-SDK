@@ -123,11 +123,14 @@ class WebRTCMeetingAPI {
     this._panelTab      = null; // "people" | "chat" | null
 
     // Misc
-    this._isLeaving     = false;
-    this._uiBuilt       = false;
-    this._isReconnecting = reconnect;
-    this._meetingStart   = null;
-    this._settings       = {}; // meeting permissions from server
+    this._isLeaving          = false;
+    this._uiBuilt            = false;
+    this._isReconnecting     = reconnect;
+    this._meetingStart       = null;
+    this._settings           = {}; // meeting permissions from server
+    // WebSocket auto-reconnect state
+    this._wsReconnectTimer    = null;
+    this._wsReconnectAttempts = 0;
 
     // Host-mute tracking (participants)
     this._hostMutedMic  = false; // true = host muted my mic
@@ -3376,28 +3379,69 @@ class WebRTCMeetingAPI {
     const reconnectParam = this._isReconnecting ? "&reconnect=1" : "";
     const uidParam = `&uid=${encodeURIComponent(this._getBrowserUID())}`;
     const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}${nameParam}${reconnectParam}${uidParam}`;
-    this._log("Connecting WebSocket: " + url);
+    console.log(`[WRTC] _setupWebSocket  attempt=${this._wsReconnectAttempts}  reconnect=${this._isReconnecting}  url=${url}`);
+    this._log("Connecting WebSocket…");
     this._ws = new WebSocket(url);
-    this._ws.onopen    = ()  => {
+
+    this._ws.onopen = () => {
       console.log('[WRTC] WS opened  room=' + this.roomName + '  name=' + this._myName);
       this._log("WS connected", undefined, "ok");
       this._setStatus("ok");
+      // Reset reconnect backoff on successful connection
+      this._wsReconnectAttempts = 0;
+      clearTimeout(this._wsReconnectTimer);
+      this._wsReconnectTimer = null;
       // Tell everyone in the room our name and current camera state
       this._sendWS({ type: "name", payload: { name: this._myName } });
       if (!this._camEnabled) {
         this._sendWS({ type: "cam-state", payload: { enabled: false } });
       }
     };
-    this._ws.onclose   = (e) => {
-      console.warn('[WRTC] WS closed  code=' + e.code + '  reason=' + e.reason);
+
+    this._ws.onclose = (e) => {
+      console.warn(`[WRTC] WS closed  code=${e.code}  reason=${e.reason}  isLeaving=${this._isLeaving}`);
       this._log(`WS closed — code=${e.code}`, undefined, "warn");
       this._setStatus("err");
+
+      // Codes that mean "don't retry" — user left, was kicked, meeting ended,
+      // or server rejected the connection permanently (bad token, room full, etc.)
+      const _noRetry = [
+        1000,  // Normal closure (user clicked leave)
+        4001,  // Invalid / expired token
+        4003,  // Forbidden
+        4429,  // MAU limit reached
+        4430,  // Room full
+      ];
+      if (this._isLeaving || _noRetry.includes(e.code)) {
+        console.log(`[WRTC] WS closed permanently — no reconnect  code=${e.code}  isLeaving=${this._isLeaving}`);
+        return;
+      }
+
+      // Unexpected disconnect (backend restart, network blip, etc.) — reconnect
+      // with exponential backoff: 1 s, 2 s, 4 s, 8 s, 16 s, then cap at 30 s.
+      this._wsReconnectAttempts += 1;
+      const _delay = Math.min(1000 * Math.pow(2, this._wsReconnectAttempts - 1), 30000);
+      console.log(`[WRTC] WS reconnect scheduled  attempt=${this._wsReconnectAttempts}  delay=${_delay}ms`);
+      this._log(`Connection lost — reconnecting in ${Math.round(_delay / 1000)}s…`, undefined, "warn");
+
+      clearTimeout(this._wsReconnectTimer);
+      this._wsReconnectTimer = setTimeout(() => {
+        if (this._isLeaving) return;
+        console.log(`[WRTC] WS reconnecting now  attempt=${this._wsReconnectAttempts}`);
+        // reconnect=1 tells the server this is a returning user, not a fresh join,
+        // so admitted guests bypass the knock queue and the host reclaims host role.
+        this._isReconnecting = true;
+        this._setupWebSocket();
+      }, _delay);
     };
-    this._ws.onerror   = (e) => {
+
+    this._ws.onerror = (e) => {
       console.error('[WRTC] WS error', e);
       this._log("WS error", undefined, "error");
       this._setStatus("err");
+      // onclose will fire immediately after onerror — reconnect logic lives there
     };
+
     this._ws.onmessage = (e) => this._handleMessages(e);
   }
 
