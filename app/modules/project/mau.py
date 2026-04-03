@@ -56,13 +56,25 @@ def _current_month() -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def get_project_and_plan(room_name: str) -> tuple[str | None, str | None]:
+async def get_project_and_plan(room_name: str) -> tuple[str | None, str | None, bool]:
     """
-    Given a meeting room_name, return (project_id_str, owner_plan).
-    Returns (None, None) if the room is not tied to any project.
+    Given a meeting room_name, return (project_id_str, owner_plan, found).
+
+    Checked in order:
+      1. ProjectMeeting.room_name  (embed meetings)
+      2. Project.room_name         (legacy project rooms)
+      3. PublicMeeting.room_code   (public meetings — returns project_id=None but sets owner_plan)
+
+    When project_id is None but owner_plan is set, the concurrent participant
+    limit is still enforced but MAU tracking is skipped (no project to track against).
+    Returns (None, None, False) only when the room is completely unknown.
+    The third element (found) allows callers to distinguish a free-tier owner
+    (owner_plan=None, found=True) from an unrecognised room (found=False).
     """
+    from app.modules.public_meeting.models import PublicMeeting
+
     async with AsyncSessionLocal() as db:
-        # First: check project_meetings (meetings created from the embed)
+        # 1. project_meetings (embed HTML meetings)
         pm = (await db.execute(
             select(ProjectMeeting).where(ProjectMeeting.room_name == room_name)
         )).scalar_one_or_none()
@@ -72,19 +84,29 @@ async def get_project_and_plan(room_name: str) -> tuple[str | None, str | None]:
                 select(Project).where(Project.id == pm.project_id)
             )).scalar_one_or_none()
         else:
-            # Fallback: room_name is the project's own room_name
+            # 2. project's own room_name (legacy)
             project = (await db.execute(
                 select(Project).where(Project.room_name == room_name)
             )).scalar_one_or_none()
 
-        if not project:
-            return None, None
+        if project:
+            owner = (await db.execute(
+                select(User).where(User.id == project.owner_id)
+            )).scalar_one_or_none()
+            return str(project.id), (owner.plan if owner else None), True
 
-        owner = (await db.execute(
-            select(User).where(User.id == project.owner_id)
+        # 3. PublicMeeting — enforce concurrent limit by owner plan, skip MAU
+        pub = (await db.execute(
+            select(PublicMeeting).where(PublicMeeting.room_code == room_name)
         )).scalar_one_or_none()
+        if pub and pub.created_by:
+            owner = (await db.execute(
+                select(User).where(User.id == pub.created_by)
+            )).scalar_one_or_none()
+            # project_id is None — caller must skip MAU tracking for public meetings
+            return None, (owner.plan if owner else None), True
 
-        return str(project.id), (owner.plan if owner else None)
+        return None, None, False
 
 
 # ── Core MAU check ────────────────────────────────────────────────────────────

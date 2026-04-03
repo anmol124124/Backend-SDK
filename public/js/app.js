@@ -43,6 +43,20 @@ class WebRTCMeetingAPI {
     this._peerConnections   = {};
     this._pendingCandidates = {};
 
+    // ── SFU (mediasoup-client) ─────────────────────────────────────────────
+    this._sfuAvailable      = false;  // server confirmed mediasoup is reachable
+    this._sfuRtpCaps        = null;   // cached rtpCapabilities from sfu:rtpCapabilities
+    this._sfuDevice         = null;   // mediasoup Device instance
+    this._sfuSendTransport  = null;   // outgoing WebRTC transport
+    this._sfuRecvTransport  = null;   // incoming WebRTC transport
+    this._sfuAudioProducer  = null;   // local audio Producer
+    this._sfuVideoProducer  = null;   // local video Producer
+    this._sfuConsumers      = {};     // consumerId → { consumer, peerId, kind }
+    this._sfuPeerStreams     = {};     // peerId → MediaStream (for remote video display)
+    this._sfuResolvers      = {};     // pendingKey → { resolve, reject }
+    this._sfuProduceCallback = null;  // { callback, errback } for produce event
+    this._sfuInitDone       = false;  // guard: prevent duplicate init
+
     // Media toggles
     this._micEnabled  = true;
     this._camEnabled  = true;
@@ -2102,16 +2116,30 @@ class WebRTCMeetingAPI {
       this._shareStream = null;
       this._isSharing   = false;
       sessionStorage.removeItem('wrtc_sharing_' + this.roomName);
-      await this._restoreCameraTrack();
-      this._renegotiateAll(); // renegotiate so peers get updated SDP for camera track
-      document.getElementById("wrtc-more-share").classList.remove("on-air");
-      document.getElementById("wrtc-more-share-label").textContent = "Share Screen";
-      // Restore cam button and VBG menu item — hidden during screen share
-      document.getElementById("wrtc-btn-cam").style.display = "";
-      document.getElementById("wrtc-more-vbg").style.display = "";
-      // Restore camera to the state it was in before sharing started
+
       const wasOn = this._camEnabledBeforeShare !== false;
       this._camEnabledBeforeShare = undefined;
+
+      // If the camera track ended while sharing (disabled track reclaimed by browser),
+      // restart the camera before attempting to restore or display it.
+      const _endedCamTracks = (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === 'ended');
+      if (_endedCamTracks.length > 0) {
+        this._log('Camera track ended during share — restarting camera', undefined, 'warn');
+        try {
+          const newCamStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const newTrack = newCamStream.getVideoTracks()[0];
+          if (newTrack && this._localStream) {
+            // Swap out the ended track for the fresh one
+            _endedCamTracks.forEach(t => { try { this._localStream.removeTrack(t); } catch (_) {} });
+            this._localStream.addTrack(newTrack);
+          } else if (newTrack) {
+            this._localStream = newCamStream;
+          }
+        } catch (e) {
+          this._log('Camera restart failed: ' + e.message, undefined, 'error');
+        }
+      }
+
       if (wasOn && !this._camEnabled) {
         this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
         this._camEnabled = true;
@@ -2121,10 +2149,27 @@ class WebRTCMeetingAPI {
         document.getElementById("wrtc-pip-avatar").style.display  = "none";
         this._sendWS({ type: "cam-state", payload: { enabled: true } });
       }
-      document.getElementById("wrtc-local-video").srcObject = this._activeVideoStream();
-      document.getElementById("wrtc-local-video").style.display = this._camEnabled ? "block" : "none";
+
+      try { await this._restoreCameraTrack(); } catch (_) {}
+      try { this._renegotiateAll(); } catch (_) {}
+
+      document.getElementById("wrtc-more-share").classList.remove("on-air");
+      document.getElementById("wrtc-more-share-label").textContent = "Share Screen";
+      document.getElementById("wrtc-btn-cam").style.display = "";
+      document.getElementById("wrtc-more-vbg").style.display = "";
+
       this._presenterUserId = null;
       this._clearPresenter();
+
+      const _lv = document.getElementById("wrtc-local-video");
+      _lv.style.display = this._camEnabled ? "block" : "none";
+      if (this._camEnabled) {
+        const _stream = this._activeVideoStream();
+        _lv.srcObject = null;
+        _lv.srcObject = _stream;
+        _lv.play().catch(() => {});
+        setTimeout(() => { if (_lv.paused) _lv.play().catch(() => {}); }, 300);
+      }
       this._sendWS({ type: "presenting", payload: { active: false } });
       this._toast("Screen sharing stopped");
     } else {
@@ -2337,6 +2382,10 @@ class WebRTCMeetingAPI {
   }
 
   async _replaceVideoTrack(newTrack) {
+    if (this._sfuAvailable && this._sfuVideoProducer) {
+      await this._sfuVideoProducer.replaceTrack({ track: newTrack });
+      return;
+    }
     for (const pc of Object.values(this._peerConnections)) {
       const sender = pc.getSenders().find(s => s.track?.kind === "video");
       if (sender) await sender.replaceTrack(newTrack);
@@ -2344,8 +2393,17 @@ class WebRTCMeetingAPI {
   }
 
   async _restoreCameraTrack() {
-    const camTrack = this._localStream?.getVideoTracks()[0];
-    if (camTrack) await this._replaceVideoTrack(camTrack);
+    // If a virtual background filter is active, restore the filter track (not raw camera).
+    const track = this._activeVideoTrack();
+    if (!track) return;
+    if (this._sfuAvailable && this._sfuVideoProducer) {
+      try { await this._sfuVideoProducer.replaceTrack({ track }); } catch (_) {}
+      return;
+    }
+    for (const pc of Object.values(this._peerConnections)) {
+      const sender = pc.getSenders().find(s => s.track?.kind === "video");
+      if (sender) { try { await sender.replaceTrack(track); } catch (_) {} }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3441,6 +3499,12 @@ class WebRTCMeetingAPI {
         this._updateGrid();  // set initial solo/grid state
         // Show host welcome card
         if (this._isHost) this._showMeetingReadyCard();
+        // Kick off SFU if mediasoup is available.
+        // sfu:rtpCapabilities always arrives before user-list, so _sfuRtpCaps is already set.
+        this._sfuAvailable = payload.sfuAvailable || false;
+        if (this._sfuAvailable && this._sfuRtpCaps && !this._sfuInitDone) {
+          this._sfuInit().catch(e => this._log('SFU init failed: ' + e.message, undefined, 'error'));
+        }
         break;
 
       case "join":
@@ -3459,7 +3523,11 @@ class WebRTCMeetingAPI {
         if (this._isSharing) {
           setTimeout(() => this._sendWS({ type: "presenting", payload: { active: true } }), 800);
         }
-        await this._initiateOffer(payload.user_id);
+        // In SFU mode the new joiner calls sfu:getProducers and subscribes to
+        // our stream automatically — no P2P offer needed.
+        if (!this._sfuAvailable) {
+          await this._initiateOffer(payload.user_id);
+        }
         break;
 
       case "host-changed": {
@@ -3632,6 +3700,12 @@ class WebRTCMeetingAPI {
       }
 
       case "presenting": {
+        // Ignore echo of own presenting signal — local state is managed directly
+        // by _setLocalPresenter() / _clearPresenter() in _toggleScreenShare().
+        // Without this guard the echo triggers _waitForPresenterVideo(myId) which
+        // polls for a tile that never exists, eventually calling _setPresenter()
+        // and hiding all tiles including the local camera tile.
+        if (from === this._myUserId) break;
         const name = this._displayName(from);
         if (payload.active) {
           const alreadyPresenting = this._presenterUserId === from;
@@ -3648,38 +3722,104 @@ class WebRTCMeetingAPI {
         break;
       }
 
+      // ── SFU: server sends router RTP capabilities on join ────────────────
       case "sfu:rtpCapabilities":
-        console.log('[WRTC] sfu:rtpCapabilities received');
-        this._log(`${type} (SFU stub)`);
+        this._sfuRtpCaps = payload.rtpCapabilities;
+        this._log('SFU rtpCapabilities received');
+        // _sfuInit() is triggered after user-list arrives (sfuAvailable flag)
         break;
-      case "sfu:transportCreated":
-        console.log('[WRTC] sfu:transportCreated  transportId=' + payload?.transportId);
-        this._log(`${type} (SFU stub)`);
+
+      // ── SFU: transport creation responses ────────────────────────────────
+      case "sfu:transportCreated": {
+        const direction = payload.direction;
+        const _r = this._sfuResolvers[`transportCreated:${direction}`];
+        if (_r) { _r.resolve(payload); delete this._sfuResolvers[`transportCreated:${direction}`]; }
         break;
-      case "sfu:transportConnected":
-        console.log('[WRTC] sfu:transportConnected  transportId=' + payload?.transportId);
-        this._log(`${type} (SFU stub)`);
+      }
+
+      // ── SFU: transport DTLS connect ack ──────────────────────────────────
+      case "sfu:transportConnected": {
+        const _ck = `transportConnected:${payload.transportId}`;
+        const _r  = this._sfuResolvers[_ck];
+        if (_r) { _r.resolve(); delete this._sfuResolvers[_ck]; }
         break;
+      }
+
+      // ── SFU: our produce was accepted — give producerId to mediasoup-client
       case "sfu:produced":
-        console.log('[WRTC] sfu:produced  producerId=' + payload?.producerId);
-        this._log(`${type} (SFU stub)`);
+        if (this._sfuProduceCallback) {
+          this._sfuProduceCallback.callback({ id: payload.producerId });
+          this._sfuProduceCallback = null;
+        }
         break;
-      case "sfu:newProducer":
-        console.log('[WRTC] sfu:newProducer  producerId=' + payload?.producerId + '  peerId=' + payload?.peerId + '  kind=' + payload?.kind);
-        this._log(`${type} (SFU stub)`);
+
+      // ── SFU: a remote peer started producing — subscribe to their stream
+      case "sfu:newProducer": {
+        const { producerId: _np_pid, peerId: _np_peer, kind: _np_kind } = payload;
+        this._log(`SFU new producer  peer=${_np_peer}  kind=${_np_kind}`);
+        if (this._sfuRecvTransport && this._sfuDevice) {
+          this._sfuConsumeProducer(_np_pid, _np_peer, _np_kind).catch(e =>
+            this._log('SFU consume failed: ' + e.message, undefined, 'warn')
+          );
+        }
         break;
-      case "sfu:consumed":
-        console.log('[WRTC] sfu:consumed  consumerId=' + payload?.consumerId + '  kind=' + payload?.kind);
-        this._log(`${type} (SFU stub)`);
+      }
+
+      // ── SFU: server created consumer — wire track to video element ────────
+      case "sfu:consumed": {
+        const { consumerId: _c_id, producerId: _c_pid, kind: _c_kind,
+                rtpParameters: _c_rtp, producerPeerId: _c_peer } = payload;
+        try {
+          const _consumer = await this._sfuRecvTransport.consume({
+            id: _c_id, producerId: _c_pid, kind: _c_kind, rtpParameters: _c_rtp,
+          });
+          this._sfuConsumers[_c_id] = { consumer: _consumer, peerId: _c_peer, kind: _c_kind };
+
+          // Build (or extend) a per-peer MediaStream and attach to video element
+          if (!this._sfuPeerStreams[_c_peer]) this._sfuPeerStreams[_c_peer] = new MediaStream();
+          const _ps = this._sfuPeerStreams[_c_peer];
+          _ps.addTrack(_consumer.track);
+
+          const _vel = document.getElementById(`wrtc-vid-${_c_peer}`);
+          if (_vel) {
+            if (_vel.srcObject !== _ps) _vel.srcObject = _ps;
+            _vel.play().catch(() => {});
+          }
+
+          if (_c_kind === 'video') {
+            this._addRemoteVideo(_c_peer, _ps);
+          } else {
+            this._setupAudioAnalyser(_c_peer, _ps);
+          }
+
+          _consumer.on('transportclose', () => { delete this._sfuConsumers[_c_id]; });
+          _consumer.on('producerclose',  () => { delete this._sfuConsumers[_c_id]; });
+
+          // Resume — server starts forwarding RTP only after this
+          this._sendWS({ type: 'sfu:resumeConsumer', payload: { consumerId: _c_id } });
+        } catch (e) {
+          this._log('SFU consume error: ' + e.message, undefined, 'error');
+        }
         break;
+      }
+
       case "sfu:consumerResumed":
-        console.log('[WRTC] sfu:consumerResumed  consumerId=' + payload?.consumerId);
-        this._log(`${type} (SFU stub)`);
+        this._log('SFU consumer resumed  id=' + payload.consumerId);
         break;
-      case "sfu:producers":
-        console.log('[WRTC] sfu:producers  count=' + (payload?.producers?.length ?? 0));
-        this._log(`${type} (SFU stub)`);
+
+      // ── SFU: existing producers list on join — subscribe to each ──────────
+      case "sfu:producers": {
+        const _prods = payload.producers || [];
+        this._log(`SFU existing producers: ${_prods.length}`);
+        for (const { producerId: _pp, peerId: _ppr, kind: _pk } of _prods) {
+          if (this._sfuRecvTransport && this._sfuDevice) {
+            this._sfuConsumeProducer(_pp, _ppr, _pk).catch(e =>
+              this._log('SFU consume failed: ' + e.message, undefined, 'warn')
+            );
+          }
+        }
         break;
+      }
 
       case "error":
         this._log("Server error: " + payload.detail, undefined, "error");
@@ -3717,6 +3857,7 @@ class WebRTCMeetingAPI {
         break;
 
       case "cam-state": {
+        if (from === this._myUserId) break; // ignore own echo
         this._camStates[from] = payload.enabled;
         const avatarEl = document.getElementById(`wrtc-avatar-${from}`);
         if (avatarEl) avatarEl.classList.toggle("visible", !payload.enabled);
@@ -3858,6 +3999,8 @@ class WebRTCMeetingAPI {
   // swap to let the browser renegotiate codec settings and bandwidth — this
   // is what makes transitions smoother instead of relying on replaceTrack alone.
   async _renegotiateAll() {
+    // In SFU mode replaceTrack() on the producer is enough — no SDP renegotiation needed.
+    if (this._sfuAvailable) return;
     for (const [remoteUserId, pc] of Object.entries(this._peerConnections)) {
       if (!pc || ["closed", "failed"].includes(pc.connectionState)) continue;
       // Skip if a negotiation is already in flight — avoids SDP glare.
@@ -3880,6 +4023,8 @@ class WebRTCMeetingAPI {
   }
 
   _cleanupPeer(userId) {
+    // In SFU mode close all consumers for this peer
+    if (this._sfuAvailable) this._sfuCleanupConsumersForPeer(userId);
     this._peerConnections[userId]?.close();
     delete this._peerConnections[userId];
     delete this._pendingCandidates[userId];
@@ -4199,7 +4344,7 @@ class WebRTCMeetingAPI {
         locateFile: f =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/${f}`
       });
-      seg.setOptions({ modelSelection: 0, selfieMode: false });
+      seg.setOptions({ modelSelection: 1, selfieMode: true });
       seg.onResults(r => this._onSegResults(r));
       await seg.initialize();
       this._selfieSegmentation = seg;
@@ -4275,19 +4420,24 @@ class WebRTCMeetingAPI {
   async _disableVirtualBg() {
     this._stopFilterLoop();
 
+    // Replace track in peers BEFORE stopping the filter stream so the SFU
+    // producer never holds a dead/ended track even for a moment.
+    const origTrack = this._localStream?.getVideoTracks()[0] ?? null;
+    await this._replaceVideoTrackInPeers(origTrack);
+    this._renegotiateAll();
+
+    // Now safe to tear down the filter stream
     if (this._filterStream) {
       this._filterStream.getTracks().forEach(t => t.stop());
       this._filterStream = null;
     }
 
-    // Restore original camera track in all peers
-    const origTrack = this._localStream?.getVideoTracks()[0] ?? null;
-    await this._replaceVideoTrackInPeers(origTrack);
-    this._renegotiateAll(); // renegotiate so peers get updated SDP when filter removed
-
-    // Restore local preview
+    // Restore local preview — play() is required after changing srcObject
     const lv = document.getElementById("wrtc-local-video");
-    if (lv) lv.srcObject = this._localStream;
+    if (lv) {
+      lv.srcObject = this._localStream;
+      lv.play().catch(() => {});
+    }
 
     // Restore local thumb in right-panel strip to raw camera stream
     const localThumb = document.querySelector(
@@ -4334,53 +4484,304 @@ class WebRTCMeetingAPI {
         (!this._lastFilterTime || now - this._lastFilterTime >= 50)) {
       this._lastFilterTime = now;
       try { await this._selfieSegmentation.send({ image: this._filterSrcVid }); }
-      catch (_) { /* drop frame */ }
+      catch (err) {
+        console.warn("[VBG] _filterTick: selfieSegmentation.send failed", err);
+      }
     }
     this._filterAnimId = requestAnimationFrame(() => this._filterTick());
   }
 
   _onSegResults(results) {
     const ctx = this._filterCtx;
-    if (!ctx || !this._filterCanvas) return;
+    if (!ctx || !this._filterCanvas) {
+      console.warn("[VBG] _onSegResults: ctx or filterCanvas is null — skipping frame");
+      return;
+    }
     const W = this._filterCanvas.width;
     const H = this._filterCanvas.height;
 
+    // Diagnostic counter — log every ~1 s (at 20 fps that is every 20th frame).
+    // IMPORTANT: diagnostics ONLY read from _filterCtx via getImageData (safe —
+    // same 2D context, no GPU readback issues).  They never draw results.image or
+    // results.segmentationMask to a secondary canvas, which would consume
+    // MediaPipe's internal WebGL frame and leave the main compositing with blank
+    // textures — that was the root cause of the all-black screen.
+    this._dbgSegFrame = (this._dbgSegFrame || 0) + 1;
+    const _logNow = (this._dbgSegFrame % 20 === 1);
+
+    if (_logNow) {
+      const maskDesc = results.segmentationMask
+        ? `${results.segmentationMask.constructor?.name || "Canvas"} ${results.segmentationMask.width}×${results.segmentationMask.height}`
+        : "MISSING";
+      const imgDesc = results.image
+        ? `${results.image.constructor?.name || "?"} ${results.image.videoWidth || results.image.width || "?"}×${results.image.videoHeight || results.image.height || "?"}`
+        : "MISSING";
+      console.log(
+        `[VBG] frame #${this._dbgSegFrame}  filter=${this._bgFilter}  canvas=${W}×${H}` +
+        `  mask: ${maskDesc}  image: ${imgDesc}` +
+        (this._bgFilter !== "blur"
+          ? `  bgImg: complete=${this._bgImages[this._bgFilter]?.complete} ` +
+            `${this._bgImages[this._bgFilter]?.naturalWidth}×${this._bgImages[this._bgFilter]?.naturalHeight}`
+          : "")
+      );
+    }
+
+    ctx.save();
     ctx.clearRect(0, 0, W, H);
 
-    // Step 1: draw raw camera frame — no mirroring here.
-    // The local <video> already has CSS scaleX(-1) for the selfie flip;
-    // the stream sent to remote peers must be in natural orientation.
-    ctx.drawImage(results.image, 0, 0, W, H);
-
-    // Step 2: mask keeps only person pixels (mask and image share same orientation).
-    ctx.globalCompositeOperation = "destination-in";
+    // ── Step 1: Draw the segmentation mask ────────────────────────────────────
+    // CRITICAL: draw directly to _filterCtx — do NOT draw results.segmentationMask
+    // or results.image to any secondary/temp canvas for diagnostics. MediaPipe
+    // uses a single shared WebGL context for both; a secondary drawImage call
+    // triggers a GPU flush and clears both textures, leaving blank data for the
+    // compositing steps below. All pixel inspection must use ctx.getImageData()
+    // on _filterCtx AFTER each draw step.
     ctx.drawImage(results.segmentationMask, 0, 0, W, H);
 
-    // Step 3: paint replacement background behind the person.
-    ctx.globalCompositeOperation = "destination-over";
-    if (this._bgFilter === "blur") {
-      ctx.filter = "blur(14px)";
+    if (_logNow) {
+      // Read from _filterCtx itself — safe, no WebGL involvement.
+      const mCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
+      const mCorner = ctx.getImageData(2, 2, 1, 1).data;
+      console.log(
+        `[VBG] after-mask  centre=(${mCentre[0]},${mCentre[1]},${mCentre[2]},${mCentre[3]})` +
+        `  corner=(${mCorner[0]},${mCorner[1]},${mCorner[2]},${mCorner[3]})`
+      );
+      // Interpretation guide:
+      //   centre alpha≈0,  corner alpha≈255 → mask is bg=opaque  person=transparent → source-out correct
+      //   centre alpha≈255, corner alpha≈0  → mask is bg=transparent person=opaque  → source-in correct
+      //   centre=(0,0,0,0) corner=(0,0,0,0) → mask drew nothing (WebGL issue or no person detected)
+      const ca = mCentre[3], ka = mCorner[3];
+      console.log(`[VBG] mask orientation guess: centre-alpha=${ca} corner-alpha=${ka}` +
+        (ca < 64 && ka > 192 ? " → bg=OPAQUE person=TRANSPARENT → source-out ✓" :
+         ca > 192 && ka < 64 ? " → bg=TRANSPARENT person=OPAQUE → should use source-in!" :
+         " → ambiguous (both zero or equal) — mask may not be drawing"));
+    }
+
+    // ── Step 2: source-out — camera drawn only in person area ─────────────────
+    // With the mask having bg=opaque (alpha≈255) and person=transparent (alpha≈0),
+    // source-out draws the camera frame only where the mask is transparent = the
+    // person's area.  Using source-in here would clip the camera to the opaque
+    // background region — that was the original "person invisible" bug.
+    ctx.globalCompositeOperation = 'source-out';
+    ctx.drawImage(results.image, 0, 0, W, H);
+
+    if (_logNow) {
+      const pCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
+      console.log(
+        `[VBG] after-source-out+camera  centre=(${pCentre[0]},${pCentre[1]},${pCentre[2]},${pCentre[3]})`
+      );
+      // Expected: centre pixel should now have camera colours (skin tone / clothing).
+      // If still (0,0,0,x): the camera frame itself is black or unreadable.
+    }
+
+    // ── Step 3: destination-atop — background fills the rest ─────────────────
+    // Person area (opaque camera pixels from step 2) is preserved.
+    // Background area (transparent after source-out) is filled with the virtual
+    // background image or blur.
+    ctx.globalCompositeOperation = 'destination-atop';
+    if (this._bgFilter === 'blur') {
+      ctx.filter = 'blur(14px)';
       ctx.drawImage(results.image, 0, 0, W, H);
-      ctx.filter = "none";
+      ctx.filter = 'none';
     } else {
       const bgImg = this._bgImages[this._bgFilter];
-      if (bgImg && bgImg.complete) {
+      if (bgImg?.complete) {
         ctx.drawImage(bgImg, 0, 0, W, H);
       } else {
-        ctx.fillStyle = "#202124";
+        console.warn(`[VBG] bgImage "${this._bgFilter}" not ready — using fallback colour`);
+        ctx.fillStyle = '#1a1d28';
         ctx.fillRect(0, 0, W, H);
       }
     }
-    ctx.globalCompositeOperation = "source-over";
+
+    ctx.restore();
+
+    if (_logNow) {
+      const fCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
+      const fCorner = ctx.getImageData(2, 2, 1, 1).data;
+      console.log(
+        `[VBG] FINAL  centre=(${fCentre[0]},${fCentre[1]},${fCentre[2]},${fCentre[3]})` +
+        `  corner=(${fCorner[0]},${fCorner[1]},${fCorner[2]},${fCorner[3]})`
+      );
+      // Expected: centre = camera colours (person visible), corner = bgImage colours.
+    }
   }
 
   async _replaceVideoTrackInPeers(newTrack) {
+    if (this._sfuAvailable && this._sfuVideoProducer) {
+      try { await this._sfuVideoProducer.replaceTrack({ track: newTrack }); } catch (_) {}
+      return;
+    }
     for (const pc of Object.values(this._peerConnections)) {
       const sender = pc.getSenders().find(s => s.track?.kind === "video");
       if (sender) {
         try { await sender.replaceTrack(newTrack); } catch (_) {}
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SFU — mediasoup-client implementation
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Lazy-load mediasoup-client from CDN (same pattern as MediaPipe). */
+  _loadMediasoupClient() {
+    return new Promise((resolve, reject) => {
+      if (window.mediasoupClient) { resolve(); return; }
+      const s = document.createElement('script');
+      s.src = `${this._httpBase}/public/js/mediasoup-client.min.js`;
+      s.onload  = resolve;
+      s.onerror = () => reject(new Error('Failed to load mediasoup-client'));
+      document.head.appendChild(s);
+    });
+  }
+
+  /**
+   * Full SFU initialisation:
+   *  1. Load mediasoup-client Device with server RTP capabilities
+   *  2. Create send + recv WebRTC transports
+   *  3. Produce local audio + video
+   *  4. Fetch existing producers and subscribe to them
+   */
+  async _sfuInit() {
+    if (this._sfuInitDone) return;
+    this._sfuInitDone = true;
+
+    try {
+      // 1. Load library + create Device
+      await this._loadMediasoupClient();
+      this._sfuDevice = new window.mediasoupClient.Device();
+      await this._sfuDevice.load({ routerRtpCapabilities: this._sfuRtpCaps });
+      this._log('SFU device loaded');
+
+      // 2a. Create send transport
+      this._sendWS({ type: 'sfu:createTransport', payload: { direction: 'send' } });
+      const sendParams = await this._sfuWaitFor('transportCreated:send');
+      this._sfuSendTransport = this._sfuDevice.createSendTransport({
+        id:             sendParams.transportId,
+        iceParameters:  sendParams.iceParameters,
+        iceCandidates:  sendParams.iceCandidates,
+        dtlsParameters: sendParams.dtlsParameters,
+      });
+
+      // Wire send transport events
+      this._sfuSendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+        this._sfuResolvers[`transportConnected:${this._sfuSendTransport.id}`] = { resolve: callback, reject: errback };
+        this._sendWS({ type: 'sfu:connectTransport', payload: { transportId: this._sfuSendTransport.id, dtlsParameters } });
+      });
+      this._sfuSendTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
+        this._sfuProduceCallback = { callback, errback };
+        this._sendWS({ type: 'sfu:produce', payload: { transportId: this._sfuSendTransport.id, kind, rtpParameters, appData } });
+      });
+
+      // 2b. Create recv transport
+      this._sendWS({ type: 'sfu:createTransport', payload: { direction: 'recv' } });
+      const recvParams = await this._sfuWaitFor('transportCreated:recv');
+      this._sfuRecvTransport = this._sfuDevice.createRecvTransport({
+        id:             recvParams.transportId,
+        iceParameters:  recvParams.iceParameters,
+        iceCandidates:  recvParams.iceCandidates,
+        dtlsParameters: recvParams.dtlsParameters,
+      });
+
+      // Wire recv transport events
+      this._sfuRecvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+        this._sfuResolvers[`transportConnected:${this._sfuRecvTransport.id}`] = { resolve: callback, reject: errback };
+        this._sendWS({ type: 'sfu:connectTransport', payload: { transportId: this._sfuRecvTransport.id, dtlsParameters } });
+      });
+
+      this._log('SFU transports created');
+
+      // 3. Produce local audio + video through the send transport
+      await this._sfuProduce();
+
+      // 4. Fetch existing producers (people already in the room) and subscribe
+      this._sendWS({ type: 'sfu:getProducers' });
+
+    } catch (e) {
+      this._sfuInitDone = false; // allow retry on next reconnect
+      this._log('SFU init failed: ' + e.message, undefined, 'error');
+      throw e;
+    }
+  }
+
+  /** Produce local audio and video tracks through the SFU send transport. */
+  async _sfuProduce() {
+    const audioTrack = this._localStream?.getAudioTracks()[0] ?? null;
+    const videoTrack = this._activeVideoTrack();
+
+    if (audioTrack) {
+      this._sfuAudioProducer = await this._sfuSendTransport.produce({
+        track: audioTrack,
+        codecOptions: { opusStereo: false, opusDtx: true },
+        appData: { kind: 'audio' },
+      });
+      // Honour current mic mute state
+      if (!this._micEnabled) this._sfuAudioProducer.pause();
+      this._log('SFU audio producer ready  id=' + this._sfuAudioProducer.id);
+    }
+
+    if (videoTrack) {
+      this._sfuVideoProducer = await this._sfuSendTransport.produce({
+        track: videoTrack,
+        encodings: [
+          { maxBitrate: 100000 },
+          { maxBitrate: 300000 },
+          { maxBitrate: 900000 },
+        ],
+        codecOptions: { videoGoogleStartBitrate: 1000 },
+        appData: { kind: 'video' },
+      });
+      // Honour current cam mute state
+      if (!this._camEnabled) this._sfuVideoProducer.pause();
+      this._log('SFU video producer ready  id=' + this._sfuVideoProducer.id);
+    }
+  }
+
+  /**
+   * Send sfu:consume for a remote producer.
+   * The server responds with sfu:consumed which wires the track to the UI.
+   */
+  async _sfuConsumeProducer(producerId, peerId, kind) {
+    if (!this._sfuDevice || !this._sfuRecvTransport) return;
+    // canConsume is a server-side check (router.canConsume) — client just sends the request
+    this._sendWS({
+      type: 'sfu:consume',
+      payload: {
+        producerId,
+        transportId: this._sfuRecvTransport.id,
+        rtpCapabilities: this._sfuDevice.rtpCapabilities,
+      },
+    });
+    // Response arrives as sfu:consumed and is handled in _handleMessages
+  }
+
+  /**
+   * Promise that resolves when a specific SFU response key arrives.
+   * Used to bridge the async request/response pattern over WebSocket.
+   */
+  _sfuWaitFor(key, timeout = 12000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        delete this._sfuResolvers[key];
+        reject(new Error('SFU timeout waiting for ' + key));
+      }, timeout);
+      this._sfuResolvers[key] = {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject:  (e) => { clearTimeout(timer); reject(e); },
+      };
+    });
+  }
+
+  /** Close and remove all SFU consumers belonging to a peer that left. */
+  _sfuCleanupConsumersForPeer(peerId) {
+    for (const [consumerId, entry] of Object.entries(this._sfuConsumers)) {
+      if (entry.peerId === peerId) {
+        try { entry.consumer.close(); } catch (_) {}
+        delete this._sfuConsumers[consumerId];
+      }
+    }
+    delete this._sfuPeerStreams[peerId];
   }
 
   _loadMediaPipe() {
@@ -4414,6 +4815,11 @@ class WebRTCMeetingAPI {
     sessionStorage.removeItem('wrtc_ready_dismissed_' + this.roomName);
     sessionStorage.removeItem('wrtc_bg_filter_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
+    // Close SFU producers and transports before disconnecting
+    try { this._sfuVideoProducer?.close(); } catch (_) {}
+    try { this._sfuAudioProducer?.close(); } catch (_) {}
+    try { this._sfuSendTransport?.close(); } catch (_) {}
+    try { this._sfuRecvTransport?.close(); } catch (_) {}
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
     this._localStream?.getTracks().forEach(t => t.stop());

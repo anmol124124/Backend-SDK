@@ -462,28 +462,37 @@ async def signaling_endpoint(
     is_guest     = token_type == "public_guest" or (token_type == "access" and token_role == "guest")
     is_embed_host = token_type == "access" and token_role == "host"
     is_public    = token_type in ("public_guest", "public_host")
+    # public_host tokens carry no "role" field (token_role is None), so checking
+    # token_role != "host" alone would incorrectly subject the host to the limit.
+    is_any_host  = is_embed_host or (token_type == "public_host")
+
+    def _non_host_count() -> int:
+        """Current non-host participant count connected to the room."""
+        size = manager.room_size(room_id)
+        hid  = manager.get_host(room_id)
+        host_in_room = 1 if (hid and manager.is_connected(room_id, hid)) else 0
+        return max(0, size - host_in_room)
+
+    # Always fetch plan info so p_limit is available in the host's message loop
+    # for the knock-approve race-condition guard (pending guests are invisible to
+    # room_size, so multiple simultaneous knockers can all pass the initial check
+    # unless we re-check at approval time with the correct limit).
+    from app.modules.project.mau import (
+        check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS,
+    )
+    project_id, owner_plan, _room_found = await get_project_and_plan(meeting_id)
+    p_limit: int | None = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 5) if _room_found else None
 
     # ── Step 4: MAU + concurrent participant limit (non-hosts only) ──────────
-    if not is_embed_host and token_role != "host":
-        from app.modules.project.mau import (
-            check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS,
-        )
-        project_id, owner_plan = await get_project_and_plan(meeting_id)
+    if not is_any_host:
         _joiner_name = websocket.query_params.get("name") or "A participant"
 
-        if project_id:
+        # _room_found distinguishes a free-tier owner (owner_plan=None, found=True)
+        # from an unknown room (found=False) where limits should not be enforced.
+        if _room_found:
             # 4a: Concurrent participant limit — checked before MAU so the
             #     "room full" message is more user-friendly than an MAU error.
-            p_limit = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 5)
             if p_limit is not None:
-                # Compute non-host count. Verify host is actually connected (not
-                # just a stale registry entry from a recent reconnect/refresh).
-                def _non_host_count() -> int:
-                    size = manager.room_size(room_id)
-                    hid  = manager.get_host(room_id)
-                    host_in_room = 1 if (hid and manager.is_connected(room_id, hid)) else 0
-                    return max(0, size - host_in_room)
-
                 non_host_count = _non_host_count()
                 logger.info(
                     "Capacity check  room=%s  user=%s  room_size=%d  host_id=%s  "
@@ -547,7 +556,8 @@ async def signaling_endpoint(
             # user could ever join despite the room having space).
             # Use base_user_id (no session suffix) so the same person rejoining
             # doesn't burn a new MAU slot each time they refresh or rejoin.
-            _skip_mau = (p_limit is not None)
+            # Also skip MAU for public meetings (project_id is None — no project to track against)
+            _skip_mau = (p_limit is not None) or (project_id is None)
             allowed, reason = (True, "") if _skip_mau else await check_and_record_mau(project_id, base_user_id, owner_plan)
             if not allowed:
                 await websocket.accept()
@@ -926,6 +936,41 @@ async def signaling_endpoint(
                 if can_admit:
                     if guest_id:
                         approved = (msg_type == "knock-approve")
+                        # Re-check participant limit at approval time to prevent
+                        # the race condition where multiple guests knock
+                        # simultaneously (pending guests are not counted in
+                        # room_size), all pass the initial check, and the host
+                        # approves more than the plan allows.
+                        if approved and p_limit is not None:
+                            current_count = _non_host_count()
+                            if current_count >= p_limit:
+                                logger.info(
+                                    "Knock-approve blocked — room full at approval time  "
+                                    "room=%s  guest=%s  count=%d  limit=%d",
+                                    room_id, guest_id, current_count, p_limit,
+                                )
+                                pending_entry = manager.get_pending(room_id, guest_id)
+                                if pending_entry:
+                                    try:
+                                        await pending_entry["ws"].send_json({
+                                            "type": "error",
+                                            "from": "server",
+                                            "payload": {
+                                                "detail": (
+                                                    f"This meeting is full "
+                                                    f"({current_count}/{p_limit} participants). "
+                                                    "Ask the host to upgrade their plan to allow more participants."
+                                                ),
+                                                "code": "room_full",
+                                                "limit": p_limit,
+                                                "current": current_count,
+                                            },
+                                        })
+                                        await pending_entry["ws"].close(code=4430, reason="Room full")
+                                    except Exception:
+                                        pass
+                                manager.resolve_pending(room_id, guest_id, False)
+                                continue
                         manager.resolve_pending(room_id, guest_id, approved)
                         logger.info(
                             "Knock resolved  room=%s  guest=%s  approved=%s  by=%s",
