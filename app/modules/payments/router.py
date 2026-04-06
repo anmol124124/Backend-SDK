@@ -83,6 +83,31 @@ async def create_checkout_session(
     return CheckoutResponse(checkout_url=session.url, session_id=session.id)
 
 
+@router.post(
+    "/activate-plan",
+    response_model=PlanResponse,
+    summary="Sandbox: directly activate a plan without Stripe",
+)
+async def activate_plan(
+    body: CheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PlanResponse:
+    plan = body.plan.lower()
+    if plan not in PLAN_PRICES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown plan '{plan}'. Choose from: basic, pro, premium.",
+        )
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    user.plan = plan
+    await db.commit()
+    return PlanResponse(plan=plan, email=user.email)
+
+
 @router.get(
     "/verify-session",
     response_model=PlanResponse,

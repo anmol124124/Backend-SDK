@@ -85,8 +85,9 @@ class WebRTCMeetingAPI {
     this._raisedHands = new Set();
 
     // Host tracking
-    this._myUserId  = null;
-    this._isHost    = false;
+    this._myUserId   = null;
+    this._isHost     = false;
+    this._hostUserId = null;  // userId of the current host (for labelling)
 
     // Active speaker
     this._audioCtx       = null;
@@ -1337,6 +1338,9 @@ class WebRTCMeetingAPI {
       .wrtc-you-tag{
         font-size:11px;color:rgba(255,255,255,.4);margin-left:4px;
       }
+      .wrtc-host-tag{
+        font-size:11px;color:#8ab4f8;margin-left:5px;font-weight:500;
+      }
       .wrtc-person-icons{display:flex;gap:6px;align-items:center}
       .wrtc-person-icon{color:rgba(255,255,255,.35);display:flex}
       .wrtc-person-icon.muted{color:#ea4335}
@@ -1831,7 +1835,7 @@ class WebRTCMeetingAPI {
     // Wire up static elements
     document.getElementById("wrtc-room-name").textContent      = this.roomName;
     document.getElementById("wrtc-room-hint").textContent      = this.roomName;
-    document.getElementById("wrtc-pip-label").textContent      = this._myName || "You";
+    document.getElementById("wrtc-pip-label").textContent      = (this._myName || "You") + this._hostTag("local");
     document.getElementById("wrtc-pip-avatar-text").textContent = this._getInitials(this._myName || "You");
     // Block browser's native video right-click context menu ("Show controls" etc.)
     this.parentNode.addEventListener("contextmenu", (e) => {
@@ -2611,6 +2615,13 @@ class WebRTCMeetingAPI {
       tag.textContent = "(you)";
       nameEl.appendChild(tag);
     }
+    const isHostUser = (isMe && this._isHost) || (!isMe && userId === this._hostUserId);
+    if (isHostUser) {
+      const hostTag = document.createElement("span");
+      hostTag.className = "wrtc-host-tag";
+      hostTag.textContent = "(Host)";
+      nameEl.appendChild(hostTag);
+    }
     info.appendChild(nameEl);
 
     const icons = document.createElement("div");
@@ -2752,7 +2763,7 @@ class WebRTCMeetingAPI {
       // Everyone tab → broadcast; host messages show as popup on recipients
       const payload = this._isHost ? { text, ts, isHostMsg: true } : { text, ts };
       this._sendWS({ type: "chat", payload });
-      this._renderMessage("You", text, ts, true, "public");
+      this._renderMessage("You" + this._hostTag("local"), text, ts, true, "public");
     }
   }
 
@@ -3703,6 +3714,7 @@ class WebRTCMeetingAPI {
       case "user-list":
         this._myUserId   = payload.myId || null;
         this._isHost     = payload.isHost || false;
+        this._hostUserId = payload.hostId || null;
         this._settings   = payload.settings || {};
         console.log('[WRTC] user-list received  room=' + this.roomName + '  myId=' + this._myUserId + '  isHost=' + this._isHost);
         // Only now is the user admitted — safe to persist name for reconnect
@@ -3762,6 +3774,7 @@ class WebRTCMeetingAPI {
       case "host-changed": {
         const wasHost = this._isHost;
         this._isHost = (payload.hostId === this._myUserId);
+        this._hostUserId = payload.hostId || null;
         // Show/hide host controls; reset toggle state on role change
         ["wrtc-btn-muteall", "wrtc-btn-mutecams"].forEach(id => {
           const btn = document.getElementById(id);
@@ -3773,6 +3786,7 @@ class WebRTCMeetingAPI {
         });
         if (this._isHost) { this._allMicsMuted = false; this._allCamsMuted = false; }
         this._renderParticipants();
+        this._refreshHostLabels();
         if (!wasHost && this._isHost) this._toast("You are now the host");
         break;
       }
@@ -3848,7 +3862,7 @@ class WebRTCMeetingAPI {
         if (this._chatRestoredFromSession) break; // already have local history
         const msgs = payload.messages || [];
         msgs.forEach(({ from: mFrom, payload: mPayload }) => {
-          const mName = this._displayName(mFrom) || mFrom?.slice(0, 8) || '?';
+          const mName = (this._displayName(mFrom) || mFrom?.slice(0, 8) || '?') + this._hostTag(mFrom);
           const isMine = mFrom === this._myUserId;
           this._renderMessage(mName, mPayload.text, mPayload.ts || Date.now(), isMine, "public", false, null);
         });
@@ -3856,7 +3870,7 @@ class WebRTCMeetingAPI {
       }
 
       case "chat": {
-        const name = this._displayName(from);
+        const name = this._displayName(from) + this._hostTag(from);
         this._renderMessage(name, payload.text, payload.ts || Date.now(), false, "public");
         if (this._panelTab !== "chat") {
           this._unread++;
@@ -3876,7 +3890,7 @@ class WebRTCMeetingAPI {
       }
 
       case "chat-private": {
-        const name = this._displayName(from);
+        const name = this._displayName(from) + this._hostTag(from);
         // Render in private tab for everyone (host receives from guests, guest receives from host)
         this._renderMessage(name, payload.text, payload.ts || Date.now(), false, "private", true, this._isHost ? from : null);
         // Badge the private tab if not currently viewing it
@@ -3905,7 +3919,7 @@ class WebRTCMeetingAPI {
         const tile = document.getElementById(`wrtc-tile-${from}`);
         if (tile) {
           const lbl = tile.querySelector(".wrtc-tile-label");
-          if (lbl) lbl.textContent = payload.name;
+          if (lbl) lbl.textContent = payload.name + this._hostTag(from);
           const av = document.querySelector(`#wrtc-avatar-${from} span`);
           if (av) av.textContent = payload.name.slice(0, 2).toUpperCase();
         }
@@ -4419,7 +4433,7 @@ class WebRTCMeetingAPI {
 
     const label = document.createElement("div");
     label.className   = "wrtc-tile-label";
-    label.textContent = this._displayName(userId);
+    label.textContent = this._displayName(userId) + this._hostTag(userId);
 
     const badge = document.createElement("div");
     badge.className = "wrtc-presenter-badge";
@@ -4538,6 +4552,24 @@ class WebRTCMeetingAPI {
     if (!userId) return "Unknown";
     if (userId === "local") return this._myName || "You";
     return this._peerNames[userId] || ("User " + (userId.split("_").pop() || userId).slice(0, 6));
+  }
+
+  /** Returns " (Host)" if the given userId is the current room host, else "". */
+  _hostTag(userId) {
+    if (userId === "local") return this._isHost ? " (Host)" : "";
+    return (this._hostUserId && userId === this._hostUserId) ? " (Host)" : "";
+  }
+
+  /** Re-stamps all visible tile labels with the current host tag after a host change. */
+  _refreshHostLabels() {
+    // Local tile
+    const pipLbl = document.getElementById("wrtc-pip-label");
+    if (pipLbl) pipLbl.textContent = (this._myName || "You") + this._hostTag("local");
+    // Remote tiles
+    Object.keys(this._participants).forEach(uid => {
+      const lbl = document.querySelector(`#wrtc-tile-${uid} .wrtc-tile-label`);
+      if (lbl) lbl.textContent = this._displayName(uid) + this._hostTag(uid);
+    });
   }
 
   _getInitials(name) {

@@ -676,13 +676,10 @@ async def signaling_endpoint(
             return
 
         # Notify host only if currently connected — otherwise re-sent when host joins
+        _knock_msg = {"type": "knock-request", "from": "server", "payload": {"guestId": user_id, "name": guest_name}}
         if host_connected:
             logger.info("Sending knock-request to host  room=%s  host=%s  guest=%s", room_id, current_host_id, user_id)
-            sent = await manager.send_personal(room_id, current_host_id, {
-                "type": "knock-request",
-                "from": "server",
-                "payload": {"guestId": user_id, "name": guest_name},
-            })
+            sent = await manager.send_personal(room_id, current_host_id, _knock_msg)
             if not sent:
                 logger.warning(
                     "knock-request delivery FAILED (host WS dead) — will retry on host reconnect  "
@@ -697,6 +694,12 @@ async def signaling_endpoint(
                 manager.room_size(room_id),
                 manager.get_permanent_host(room_id),
                 len(manager.get_pending_ids(room_id)),
+            )
+        # When participants can admit others, also send knock-request to all
+        # non-host participants already in the room so they see the request too.
+        if meeting_settings.get("allow_participant_admit", False) and host_connected:
+            await manager.broadcast_to_room(
+                room_id, _knock_msg, exclude_user_id=current_host_id
             )
 
         # Wait for host decision while also watching for guest disconnect (10-min timeout)
@@ -835,6 +838,7 @@ async def signaling_endpoint(
                 "sfuAvailable": sfu_available,
                 "myId": user_id,
                 "isHost": manager.is_host(room_id, user_id),
+                "hostId": manager.get_host(room_id),
                 "settings": {k: v for k, v in meeting_settings.items() if k != "host_user_id"},
             },
         },
@@ -856,39 +860,48 @@ async def signaling_endpoint(
         exclude_user_id=user_id,
     )
 
-    # Re-send any pending knock requests to the host (handles host refresh)
+    # Re-send any pending knock requests to the host (handles host refresh).
+    # When allow_participant_admit is enabled, also notify newly joining participants.
+    _send_knocks_to = []
     if manager.is_host(room_id, user_id):
+        _send_knocks_to.append(user_id)
+    elif meeting_settings.get("allow_participant_admit", False):
+        _send_knocks_to.append(user_id)
+
+    if _send_knocks_to:
         pending_ids = manager.get_pending_ids(room_id)
         logger.info(
-            "Host joined — re-sending pending knocks  room=%s  host=%s  pending=%s",
+            "Joined — re-sending pending knocks  room=%s  user=%s  pending=%s",
             room_id, user_id, pending_ids,
         )
         for pending_uid in pending_ids:
             pending = manager.get_pending(room_id, pending_uid)
             if pending:
                 logger.info(
-                    "Re-sending knock-request  room=%s  host=%s  guest=%s  name=%s",
+                    "Re-sending knock-request  room=%s  user=%s  guest=%s  name=%s",
                     room_id, user_id, pending_uid, pending["name"],
                 )
-                await manager.send_personal(room_id, user_id, {
-                    "type": "knock-request",
-                    "from": "server",
-                    "payload": {"guestId": pending_uid, "name": pending["name"]},
-                })
-                # Also update the guest's waiting screen — they may still show
-                # "Waiting for host to join" since the host wasn't connected when
-                # they first knocked.
-                try:
-                    await pending["ws"].send_json({
-                        "type": "knock-waiting",
+                for recipient in _send_knocks_to:
+                    await manager.send_personal(room_id, recipient, {
+                        "type": "knock-request",
                         "from": "server",
-                        "payload": {"name": pending["name"], "host_present": True},
+                        "payload": {"guestId": pending_uid, "name": pending["name"]},
                     })
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to update knock-waiting for guest  room=%s  guest=%s  error=%s",
-                        room_id, pending_uid, exc,
-                    )
+                if manager.is_host(room_id, user_id):
+                    # Also update the guest's waiting screen — they may still show
+                    # "Waiting for host to join" since the host wasn't connected when
+                    # they first knocked.
+                    try:
+                        await pending["ws"].send_json({
+                            "type": "knock-waiting",
+                            "from": "server",
+                            "payload": {"name": pending["name"], "host_present": True},
+                        })
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to update knock-waiting for guest  room=%s  guest=%s  error=%s",
+                            room_id, pending_uid, exc,
+                        )
 
     # ── Step 8: message loop ──────────────────────────────────────────────────
     try:
