@@ -76,27 +76,6 @@ class WebRTCMeetingAPI {
     this._unread         = 0;
     this._privateUnread  = 0;
     this._chatRestoredFromSession = false;
-    this._bgFilter          = 'none';
-    this._filterCanvas      = null;
-    this._filterCtx         = null;
-    this._filterStream      = null;
-    this._filterAnimId      = null;
-    this._filterSrcVid      = null;
-    this._filterPanelOpen   = false;
-    this._selfieSegmentation = null;
-    this._blurCanvas        = null;
-    this._blurCtx           = null;
-    this._tmpCanvas         = null;
-    this._tmpCtx            = null;
-    this._maskCanvas        = null;
-    this._maskCtx           = null;
-    this._segCanvas         = null;
-    this._segCtx            = null;
-    this._hasMask           = false;
-    this._segPending        = false;
-    this._bgImageEl         = null;
-    this._bgImages          = {};   // cache: bgName → HTMLImageElement
-    this._segResults        = null;
     this._chatSubTab     = "public"; // "public" | "private"
     this._popupTimer     = null;
     this._privateReplyTo = null;    // { userId, name } — host's active reply target
@@ -110,16 +89,22 @@ class WebRTCMeetingAPI {
     this._isHost    = false;
 
     // Active speaker
-    this._audioCtx      = null;
-    this._analysers     = {};   // userId → AnalyserNode
-    this._speakerTimer  = null;
+    this._audioCtx       = null;
+    this._analysers      = {};   // userId → AnalyserNode
+    this._speakerTimer   = null;
+    this._speakerRafId   = null; // requestAnimationFrame handle for mic animation
     this._currentSpeaker = null;
+    this._smoothedLevels = {};   // userId → smoothed audio level [0–1]
 
     // Names & participants
     this._myName        = "";
     this._peerNames     = {};   // userId → display name
     this._participants  = {};   // userId → name (everyone in room)
     this._camStates     = {};   // userId → boolean (true=on, false=off)
+    this._micStates     = {};   // userId → boolean (true=on, false=off)
+    // Host-side tracking: which participants were force-muted/cam-offed by admin
+    this._hostForcedOffCam = new Set();
+    this._hostForcedOffMic = new Set();
     this._panelTab      = null; // "people" | "chat" | null
 
     // Misc
@@ -135,6 +120,12 @@ class WebRTCMeetingAPI {
     // Host-mute tracking (participants)
     this._hostMutedMic  = false; // true = host muted my mic
     this._hostMutedCam  = false; // true = host muted my cam
+    // Self-mute tracking — set only by participant's own toggle, never by host
+    this._selfMutedMic  = false;
+    this._selfMutedCam  = false;
+    // Strict lock: when set by host, participant cannot re-enable until unlocked
+    this._micLocked     = false;
+    this._camLocked     = false;
     // Host bulk-action state (host side)
     this._allMicsMuted  = false;
     this._allCamsMuted  = false;
@@ -689,11 +680,64 @@ class WebRTCMeetingAPI {
     });
   }
 
+  _showPermissionHint() {
+    // Show a brief card over the camera preview area before the browser prompt appears.
+    // Only shown if permission hasn't been granted already.
+    const existing = document.getElementById("wrtc-perm-hint");
+    if (existing) return;
+    const card = document.createElement("div");
+    card.id = "wrtc-perm-hint";
+    Object.assign(card.style, {
+      position: "absolute", inset: "0", zIndex: "20",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "rgba(13,15,20,.82)", backdropFilter: "blur(6px)",
+      borderRadius: "inherit", padding: "24px",
+      fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+    });
+    card.innerHTML =
+      '<div style="text-align:center;max-width:240px;">' +
+        '<div style="width:52px;height:52px;border-radius:50%;background:rgba(26,115,232,.18);' +
+          'border:1.5px solid rgba(26,115,232,.5);display:flex;align-items:center;justify-content:center;' +
+          'margin:0 auto 14px;">' +
+          '<svg width="26" height="26" viewBox="0 0 24 24" fill="#4d94ff">' +
+            '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>' +
+          '</svg>' +
+        '</div>' +
+        '<p style="color:#e8eaed;font-size:14px;font-weight:600;margin:0 0 8px;line-height:1.4">' +
+          'Allow camera &amp; microphone access' +
+        '</p>' +
+        '<p style="color:rgba(255,255,255,.5);font-size:12px;margin:0;line-height:1.6">' +
+          'Please click <strong style="color:rgba(255,255,255,.75)">Allow</strong> in the browser prompt for a smoother meeting experience.' +
+        '</p>' +
+      '</div>';
+    // Attach to the lobby-left panel (camera preview area)
+    const lobbyLeft = document.querySelector(".wrtc-lobby-left");
+    if (lobbyLeft) lobbyLeft.appendChild(card);
+  }
+
+  _hidePermissionHint() {
+    document.getElementById("wrtc-perm-hint")?.remove();
+  }
+
   async _initPreview() {
+    // Check if permission is already granted — skip the hint if so
+    let alreadyGranted = false;
+    try {
+      const [camPerm, micPerm] = await Promise.all([
+        navigator.permissions.query({ name: "camera" }),
+        navigator.permissions.query({ name: "microphone" }),
+      ]);
+      alreadyGranted = camPerm.state === "granted" && micPerm.state === "granted";
+    } catch (_) { /* permissions API not supported — assume not granted */ }
+
+    if (!alreadyGranted) this._showPermissionHint();
+
     try {
       this._localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      this._hidePermissionHint();
       document.getElementById("wrtc-lobby-video").srcObject = this._localStream;
     } catch (_) {
+      this._hidePermissionHint();
       // Try video-only (mic may be denied/unavailable)
       try {
         this._localStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -945,6 +989,44 @@ class WebRTCMeetingAPI {
       }
       @keyframes wrtc-bounce{from{transform:translateY(0)}to{transform:translateY(-4px)}}
       .wrtc-tile-hand.raised{display:block}
+      .wrtc-tile-mic{
+        position:absolute;bottom:10px;right:8px;z-index:3;
+        width:26px;height:26px;border-radius:50%;
+        background:rgba(0,0,0,.55);backdrop-filter:blur(4px);
+        display:flex;align-items:center;justify-content:center;
+        pointer-events:none;
+      }
+      .wrtc-tile-mic-ring{
+        position:absolute;inset:-4px;border-radius:50%;
+        border:2.5px solid #50c878;transform:scale(0);opacity:0;
+        will-change:transform,opacity;pointer-events:none;
+      }
+      .wrtc-tile-mic.muted{background:rgba(234,67,53,.22)}
+      /* ── PIN BUTTON (hover-reveal center overlay) ── */
+      .wrtc-tile-pin{
+        position:absolute;inset:0;z-index:10;
+        display:flex;align-items:center;justify-content:center;
+        opacity:0;pointer-events:none;
+        transition:opacity .18s;
+      }
+      .wrtc-tile:hover .wrtc-tile-pin{opacity:1;pointer-events:auto;}
+      /* Don't show pin when tile is in the focus-main area */
+      .wrtc-focus-main .wrtc-tile:hover .wrtc-tile-pin{opacity:0;pointer-events:none;}
+      /* Don't show pin button on own (local) tile during screen share */
+      .wrtc-stage.presenting #wrtc-local-tile .wrtc-tile-pin,
+      .wrtc-focus-tiles #wrtc-local-tile .wrtc-tile-pin{opacity:0!important;pointer-events:none!important;}
+      .wrtc-tile-pin-btn{
+        width:52px;height:52px;border-radius:50%;
+        background:rgba(0,0,0,.58);backdrop-filter:blur(6px);
+        border:2px solid rgba(255,255,255,.35);
+        display:flex;align-items:center;justify-content:center;
+        cursor:pointer;
+        transition:background .15s,transform .15s,border-color .15s;
+      }
+      .wrtc-tile-pin-btn:hover{
+        background:rgba(26,115,232,.82);border-color:rgba(255,255,255,.7);
+        transform:scale(1.12);
+      }
 
       /* ── FOCUS MODE ── */
       .wrtc-focus-wrap{
@@ -958,27 +1040,31 @@ class WebRTCMeetingAPI {
         border-radius:16px;cursor:default;
       }
       .wrtc-focus-exit{
-        position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:20;
-        background:rgba(0,0,0,.65);backdrop-filter:blur(6px);
-        border:1px solid rgba(255,255,255,.22);color:#fff;
-        font-size:12px;font-weight:600;padding:5px 16px;border-radius:20px;
-        cursor:pointer;display:flex;align-items:center;gap:6px;
-        transition:background .15s;white-space:nowrap;letter-spacing:.2px;
+        position:absolute;top:10px;right:10px;z-index:20;
+        width:32px;height:32px;border-radius:50%;
+        background:rgba(0,0,0,.60);backdrop-filter:blur(6px);
+        border:1px solid rgba(255,255,255,.25);color:#fff;
+        font-size:16px;line-height:1;
+        cursor:pointer;display:flex;align-items:center;justify-content:center;
+        transition:background .15s,transform .12s;
       }
-      .wrtc-focus-exit:hover{background:rgba(200,40,40,.85);}
+      .wrtc-focus-exit:hover{background:rgba(220,38,38,.85);transform:scale(1.1);}
       .wrtc-focus-panel{
-        width:28%;display:flex;flex-direction:column;gap:6px;overflow:hidden;flex-shrink:0;
+        width:22%;min-width:140px;max-width:220px;
+        display:flex;flex-direction:column;gap:6px;overflow:hidden;flex-shrink:0;
       }
       .wrtc-focus-tiles{
-        display:flex;flex-direction:column;gap:6px;flex:1;overflow:hidden;
+        display:flex;flex-direction:column;gap:6px;flex:1;overflow-y:auto;overflow-x:hidden;
       }
       .wrtc-focus-tiles>.wrtc-tile{
-        flex:1;min-height:0;cursor:pointer;border-radius:12px;
-        transition:box-shadow .2s,transform .15s;
+        flex:0 0 auto;height:130px;cursor:pointer;border-radius:12px;
+        transition:box-shadow .2s,transform .15s,outline .15s;
+        outline:2px solid transparent;
       }
       .wrtc-focus-tiles>.wrtc-tile:hover{
-        transform:scale(1.025);
-        box-shadow:0 4px 24px rgba(108,99,255,.45);
+        transform:scale(1.03);
+        outline:2px solid rgba(108,99,255,.7);
+        box-shadow:0 4px 20px rgba(108,99,255,.35);
       }
       .wrtc-focus-more{
         background:rgba(108,99,255,.12);border:1px solid rgba(108,99,255,.3);
@@ -987,7 +1073,8 @@ class WebRTCMeetingAPI {
         transition:background .15s;
       }
       .wrtc-focus-more:hover{background:rgba(108,99,255,.22);}
-      .wrtc-tile{cursor:pointer;}
+      .wrtc-tile{cursor:default;}
+      .wrtc-focus-tiles>.wrtc-tile{cursor:pointer;}
 
       /* ── PRESENTATION MODE ── */
       .wrtc-stage.presenting{
@@ -1038,6 +1125,20 @@ class WebRTCMeetingAPI {
         font-size:10px;color:#fff;font-weight:500;
         background:rgba(0,0,0,.55);padding:2px 5px;border-radius:4px;
       }
+      .wrtc-thumb-pin{
+        position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+        opacity:0;pointer-events:none;transition:opacity .18s;
+        background:rgba(0,0,0,.22);border-radius:10px;
+      }
+      .wrtc-thumb-tile:hover .wrtc-thumb-pin{opacity:1;pointer-events:auto;}
+      .wrtc-thumb-pin-btn{
+        width:38px;height:38px;border-radius:50%;
+        background:rgba(0,0,0,.58);backdrop-filter:blur(6px);
+        border:2px solid rgba(255,255,255,.35);
+        display:flex;align-items:center;justify-content:center;
+        cursor:pointer;transition:background .15s,transform .15s,border-color .15s;
+      }
+      .wrtc-thumb-pin-btn:hover{background:rgba(26,115,232,.82);border-color:rgba(255,255,255,.7);transform:scale(1.12);}
 
       /* ── WAITING (full-screen, shown when alone) ── */
       .wrtc-waiting{
@@ -1095,6 +1196,7 @@ class WebRTCMeetingAPI {
       .wrtc-btn:active{transform:scale(.91)}
       .wrtc-btn.muted,.wrtc-btn.active-feature{background:rgba(234,67,53,.9);color:#fff;box-shadow:0 2px 12px rgba(234,67,53,.4)}
       .wrtc-btn.muted:hover,.wrtc-btn.active-feature:hover{background:#ea4335}
+      .wrtc-btn.admin-locked{opacity:.45;cursor:not-allowed;pointer-events:none}
       .wrtc-btn.on-air{background:rgba(26,115,232,.9);color:#fff;box-shadow:0 2px 12px rgba(26,115,232,.4)}
       .wrtc-btn.on-air:hover{background:#1a73e8}
       .wrtc-btn-badge{
@@ -1442,70 +1544,6 @@ class WebRTCMeetingAPI {
       }
       .wrtc-invite-close:hover{background:rgba(255,255,255,.14)}
 
-      /* ── VIRTUAL BACKGROUND ── */
-      .wrtc-btn.vbg-active{background:rgba(138,180,248,.18);color:#8ab4f8}
-      .wrtc-vbg-overlay{
-        position:absolute;inset:0;z-index:300;
-        background:rgba(0,0,0,.55);backdrop-filter:blur(3px);
-        display:flex;align-items:flex-end;justify-content:center;
-      }
-      .wrtc-vbg-panel{
-        background:#2d2e31;border-radius:16px 16px 0 0;
-        padding:20px 20px 24px;width:100%;max-width:560px;
-        box-shadow:0 -8px 32px rgba(0,0,0,.6);
-        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-        animation:wrtc-vbg-up .22s cubic-bezier(.4,0,.2,1);
-      }
-      @keyframes wrtc-vbg-up{from{transform:translateY(100%)}to{transform:translateY(0)}}
-      .wrtc-vbg-header{
-        display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;
-      }
-      .wrtc-vbg-title{font-size:15px;font-weight:600;color:#e8eaed}
-      .wrtc-vbg-close{
-        background:none;border:none;color:rgba(255,255,255,.5);cursor:pointer;
-        font-size:20px;line-height:1;padding:0 4px;border-radius:6px;
-        transition:color .15s;
-      }
-      .wrtc-vbg-close:hover{color:#e8eaed}
-      .wrtc-vbg-grid{
-        display:grid;grid-template-columns:repeat(5,1fr);gap:10px;
-      }
-      .wrtc-vbg-opt{
-        display:flex;flex-direction:column;align-items:center;gap:6px;
-        cursor:pointer;
-      }
-      .wrtc-vbg-thumb{
-        width:100%;aspect-ratio:16/9;border-radius:10px;
-        border:2px solid transparent;
-        transition:border-color .15s,transform .12s;
-        object-fit:cover;display:block;
-      }
-      img.wrtc-vbg-thumb{background:#3c4043}
-      .wrtc-vbg-thumb:hover,.wrtc-vbg-none-icon:hover{transform:scale(1.05)}
-      .wrtc-vbg-opt.active .wrtc-vbg-thumb,
-      .wrtc-vbg-opt.active .wrtc-vbg-none-icon{border-color:#8ab4f8}
-      .wrtc-vbg-label{font-size:11px;color:rgba(255,255,255,.55);text-align:center}
-      .wrtc-vbg-opt.active .wrtc-vbg-label{color:#8ab4f8;font-weight:600}
-      .wrtc-vbg-none-icon{
-        width:100%;aspect-ratio:16/9;border-radius:10px;
-        border:2px solid rgba(255,255,255,.15);background:#1e1f22;
-        display:flex;align-items:center;justify-content:center;
-        font-size:22px;color:rgba(255,255,255,.3);
-        transition:border-color .15s,transform .12s;box-sizing:border-box;
-      }
-      .wrtc-vbg-blur-thumb{
-        width:100%;aspect-ratio:16/9;border-radius:10px;
-        border:2px solid transparent;
-        background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-        display:flex;align-items:center;justify-content:center;
-        transition:border-color .15s,transform .12s;box-sizing:border-box;
-      }
-      .wrtc-vbg-opt.active .wrtc-vbg-blur-thumb{border-color:#8ab4f8}
-      .wrtc-vbg-blur-thumb:hover{transform:scale(1.05)}
-      .wrtc-vbg-status{
-        margin-top:14px;font-size:12px;color:rgba(255,255,255,.4);
-        text-align:center;min-height:16px;
-      }
     </style>
 
     <div class="wrtc" id="wrtc-root">
@@ -1540,13 +1578,18 @@ class WebRTCMeetingAPI {
               <span id="wrtc-pip-avatar-text"></span>
             </div>
             <div class="wrtc-pip-hand" id="wrtc-pip-hand">✋</div>
+            <div class="wrtc-tile-mic" id="wrtc-mic-ind-local">
+              <div class="wrtc-tile-mic-ring" id="wrtc-mic-ring-local"></div>
+              <svg class="wrtc-mic-svg-on" width="13" height="13" viewBox="0 0 24 24" fill="white"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+              <svg class="wrtc-mic-svg-off" width="13" height="13" viewBox="0 0 24 24" fill="#ea4335" style="display:none"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
+            </div>
             <div class="wrtc-tile-label" id="wrtc-pip-label"></div>
           </div>
         </div>
         <!-- Focus mode layout — shown instead of grid when a tile is focused -->
         <div class="wrtc-focus-wrap" id="wrtc-focus-wrap" style="display:none">
           <div class="wrtc-focus-main" id="wrtc-focus-main">
-            <div class="wrtc-focus-exit" id="wrtc-focus-exit">&#x2715; Exit focus</div>
+            <div class="wrtc-focus-exit" id="wrtc-focus-exit" title="Exit spotlight">&#x2715;</div>
           </div>
           <div class="wrtc-focus-panel" id="wrtc-focus-panel">
             <div class="wrtc-focus-tiles" id="wrtc-focus-tiles"></div>
@@ -1689,30 +1732,28 @@ class WebRTCMeetingAPI {
 
         <div class="wrtc-divider"></div>
 
-        <!-- Mute All Mics (host only, shown when mics not yet all muted) -->
+        <!-- Mute All Mics (host only, shown when mics not yet all muted) — normal mic icon (active state) -->
         <button class="wrtc-btn" id="wrtc-btn-muteall" title="Mute all microphones" style="display:none">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16.5 12c0 1.77-1.02 3.29-2.5 4.06V8l2.5-2.5V12zM5 9v6h4l5 5V4L9 9H5zm11.5 0l-1.5 1.5V9h1.5z"/>
-            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2.2"/>
-          </svg>
-        </button>
-        <!-- Unmute All Mics (host only, shown after muting all) -->
-        <button class="wrtc-btn" id="wrtc-btn-unmuteall" title="Unmute all microphones" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
           </svg>
         </button>
-        <!-- Mute All Cams (host only, shown when cams not yet all muted) -->
+        <!-- Unmute All Mics (host only, shown after muting all) — slashed mic icon (muted state) -->
+        <button class="wrtc-btn muted" id="wrtc-btn-unmuteall" title="Unmute all microphones" style="display:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
+          </svg>
+        </button>
+        <!-- Mute All Cams (host only, shown when cams not yet all muted) — normal camera icon (active state) -->
         <button class="wrtc-btn" id="wrtc-btn-mutecams" title="Mute all cameras" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
-            <line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2.2"/>
           </svg>
         </button>
-        <!-- Unmute All Cams (host only, shown after muting all cams) -->
-        <button class="wrtc-btn" id="wrtc-btn-unmutecams" title="Unmute all cameras" style="display:none">
+        <!-- Unmute All Cams (host only, shown after muting all cams) — slashed camera icon (muted state) -->
+        <button class="wrtc-btn muted" id="wrtc-btn-unmutecams" title="Unmute all cameras" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+            <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
           </svg>
         </button>
 
@@ -1765,13 +1806,6 @@ class WebRTCMeetingAPI {
           <span>Participants</span>
         </div>
         <div class="wrtc-more-divider"></div>
-        <div class="wrtc-more-item" id="wrtc-more-vbg">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
-          </svg>
-          <span id="wrtc-more-vbg-label">Virtual Background</span>
-        </div>
-        <div class="wrtc-more-divider"></div>
         <div class="wrtc-more-item" id="wrtc-more-invite">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
@@ -1782,42 +1816,6 @@ class WebRTCMeetingAPI {
 
       <div class="wrtc-toast" id="wrtc-toast"></div>
 
-      <!-- Virtual Background Panel -->
-      <div class="wrtc-vbg-overlay" id="wrtc-vbg-overlay" style="display:none">
-        <div class="wrtc-vbg-panel" id="wrtc-vbg-panel">
-          <div class="wrtc-vbg-header">
-            <span class="wrtc-vbg-title">Virtual Background</span>
-            <button class="wrtc-vbg-close" id="wrtc-vbg-close">&times;</button>
-          </div>
-          <div class="wrtc-vbg-grid">
-            <div class="wrtc-vbg-opt active" data-bg="none">
-              <div class="wrtc-vbg-none-icon">&#10005;</div>
-              <span class="wrtc-vbg-label">None</span>
-            </div>
-            <div class="wrtc-vbg-opt" data-bg="blur">
-              <div class="wrtc-vbg-blur-thumb">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="rgba(255,255,255,.85)">
-                  <path d="M6 13c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm0 4c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm0-8c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm-3 6.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zM12 13c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm6 0c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1zm3 2.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zM9 13.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm6 0c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5z"/>
-                </svg>
-              </div>
-              <span class="wrtc-vbg-label">Blur</span>
-            </div>
-            <div class="wrtc-vbg-opt" data-bg="office">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/office.jpg?v=2" alt="Office" crossorigin="anonymous">
-              <span class="wrtc-vbg-label">Office</span>
-            </div>
-            <div class="wrtc-vbg-opt" data-bg="nature">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/nature.jpg?v=2" alt="Nature" crossorigin="anonymous">
-              <span class="wrtc-vbg-label">Nature</span>
-            </div>
-            <div class="wrtc-vbg-opt" data-bg="library">
-              <img class="wrtc-vbg-thumb" src="${this._httpBase}/api/v1/bg/library.jpg?v=2" alt="Library" crossorigin="anonymous">
-              <span class="wrtc-vbg-label">Library</span>
-            </div>
-          </div>
-          <div class="wrtc-vbg-status" id="wrtc-vbg-status"></div>
-        </div>
-      </div>
     </div>`;
 
     // Inject branding logo (embed-only — only present when logoUrl was passed)
@@ -1840,13 +1838,27 @@ class WebRTCMeetingAPI {
       if (e.target.tagName === "VIDEO") e.preventDefault();
     });
 
-    // Local tile — focus on click
-    const localTile = document.getElementById("wrtc-local-tile");
-    localTile.addEventListener("click", () => {
-      if (this._focusTileId === "wrtc-local-tile") return; // already main
-      if (this._focusTileId) { this._switchFocusTile("wrtc-local-tile"); return; }
-      if (Object.keys(this._peerConnections).length > 0) this._enterFocusMode("wrtc-local-tile");
-    });
+    // Local tile — pin button (hover-reveal, same as remote tiles)
+    {
+      const _localPinOverlay = document.createElement("div");
+      _localPinOverlay.className = "wrtc-tile-pin";
+      const _localPinBtn = document.createElement("div");
+      _localPinBtn.className = "wrtc-tile-pin-btn";
+      _localPinBtn.title = "Spotlight your video";
+      _localPinBtn.innerHTML =
+        `<svg width="22" height="22" viewBox="0 0 24 24" fill="white">` +
+        `<path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>`;
+      _localPinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (this._presenterUserId || this._isSharing) return; // don't allow self-pin during any screen share
+        if (this._focusTileId === "wrtc-local-tile") return;
+        if (this._focusTileId) { this._switchFocusTile("wrtc-local-tile"); return; }
+        const _remoteTiles = document.querySelectorAll("#wrtc-grid .wrtc-tile:not(#wrtc-local-tile)").length;
+        if (_remoteTiles > 0) this._enterFocusMode("wrtc-local-tile");
+      });
+      _localPinOverlay.appendChild(_localPinBtn);
+      document.getElementById("wrtc-local-tile").appendChild(_localPinOverlay);
+    }
     document.getElementById("wrtc-focus-exit").addEventListener("click", () => this._exitFocusMode());
     document.getElementById("wrtc-focus-more").addEventListener("click", () => this._exitFocusMode());
 
@@ -1884,12 +1896,6 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
     document.getElementById("wrtc-btn-chat").addEventListener("click",  () => this._togglePanel("chat"));
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
-    document.getElementById("wrtc-vbg-close").addEventListener("click", () => this._closeVBGPanel());
-    document.getElementById("wrtc-vbg-overlay").addEventListener("click", () => this._closeVBGPanel());
-    document.getElementById("wrtc-vbg-panel").addEventListener("click", e => e.stopPropagation());
-    document.querySelectorAll(".wrtc-vbg-opt").forEach(el => {
-      el.addEventListener("click", () => this._selectVBG(el.dataset.bg));
-    });
     // 3-dot more menu
     document.getElementById("wrtc-btn-more").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1923,10 +1929,6 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-more-invite").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
       this._showInvite();
-    });
-    document.getElementById("wrtc-more-vbg").addEventListener("click", () => {
-      document.getElementById("wrtc-more-menu").style.display = "none";
-      this._toggleVBGPanel();
     });
     // Close more menu on outside click
     document.addEventListener("click", () => {
@@ -2004,6 +2006,10 @@ class WebRTCMeetingAPI {
   // MIC / CAM
   // ═══════════════════════════════════════════════════════════════════════
   _toggleMic() {
+    if (this._micLocked) {
+      this._toast("Your microphone is disabled by the host");
+      return;
+    }
     if (!this._micEnabled && !this._isHost && this._settings.allow_unmute_self === false) {
       this._toast("The host has disabled self-unmuting");
       return;
@@ -2028,12 +2034,14 @@ class WebRTCMeetingAPI {
               await this._initiateOffer(peerId);
             }
           }
-          this._micEnabled = true;
+          this._micEnabled    = true;
+          this._selfMutedMic  = false; // participant turned mic on themselves
           sessionStorage.setItem('wrtc_mic_' + this.roomName, '1');
           document.getElementById("wrtc-btn-mic").classList.remove("muted");
           document.getElementById("wrtc-ico-mic").style.display     = "";
           document.getElementById("wrtc-ico-mic-off").style.display = "none";
           this._setupAudioAnalyser("local", this._localStream);
+          this._sendWS({ type: "mic-state", payload: { enabled: true } });
           this._toast("Microphone on");
         })
         .catch(err => {
@@ -2043,15 +2051,22 @@ class WebRTCMeetingAPI {
     }
 
     this._micEnabled = !this._micEnabled;
+    this._selfMutedMic = !this._micEnabled; // true when participant turns mic off, false when on
     this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
     sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-mic").classList.toggle("muted", !this._micEnabled);
     document.getElementById("wrtc-ico-mic").style.display     = this._micEnabled ? "" : "none";
     document.getElementById("wrtc-ico-mic-off").style.display = this._micEnabled ? "none" : "";
+    this._sendWS({ type: "mic-state", payload: { enabled: this._micEnabled } });
+    this._syncLocalMicTile();
     this._toast(this._micEnabled ? "Microphone on" : "Microphone muted");
   }
 
   _toggleCam() {
+    if (this._camLocked) {
+      this._toast("Your camera is disabled by the host");
+      return;
+    }
     if (!this._camEnabled && !this._isHost && this._settings.allow_unmute_self === false) {
       this._toast("The host has disabled self-unmuting");
       return;
@@ -2075,7 +2090,8 @@ class WebRTCMeetingAPI {
               await this._initiateOffer(peerId);
             }
           }
-          this._camEnabled = true;
+          this._camEnabled   = true;
+          this._selfMutedCam = false; // participant turned cam on themselves
           sessionStorage.setItem('wrtc_cam_' + this.roomName, '1');
           document.getElementById("wrtc-btn-cam").classList.remove("muted");
           document.getElementById("wrtc-ico-cam").style.display     = "";
@@ -2093,6 +2109,7 @@ class WebRTCMeetingAPI {
     }
 
     this._camEnabled = !this._camEnabled;
+    this._selfMutedCam = !this._camEnabled; // true when participant turns cam off, false when on
     this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
     sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-cam").classList.toggle("muted", !this._camEnabled);
@@ -2159,7 +2176,6 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-more-share").classList.remove("on-air");
       document.getElementById("wrtc-more-share-label").textContent = "Share Screen";
       document.getElementById("wrtc-btn-cam").style.display = "";
-      document.getElementById("wrtc-more-vbg").style.display = "";
 
       this._presenterUserId = null;
       this._clearPresenter();
@@ -2187,9 +2203,8 @@ class WebRTCMeetingAPI {
         this._renegotiateAll(); // renegotiate so peers get updated SDP for screen track
         document.getElementById("wrtc-more-share").classList.add("on-air");
         document.getElementById("wrtc-more-share-label").textContent = "Stop Sharing";
-        // Hide cam button and VBG option — not relevant while screen sharing
+        // Hide cam button while screen sharing
         document.getElementById("wrtc-btn-cam").style.display = "none";
-        document.getElementById("wrtc-more-vbg").style.display = "none";
         // Disable camera so participants only see the shared screen, not the webcam.
         // Save current cam state so we can restore it when sharing stops.
         this._camEnabledBeforeShare = this._camEnabled;
@@ -2219,6 +2234,8 @@ class WebRTCMeetingAPI {
   _waitForPresenterVideo(userId) {
     const _trySet = () => {
       if (this._presenterUserId !== userId) return; // share was cancelled
+      // If viewer has a tile pinned, keep their pinned view — don't switch to presenter layout
+      if (this._focusTileId) return;
       this._setPresenter(userId);
     };
 
@@ -2338,6 +2355,29 @@ class WebRTCMeetingAPI {
     lbl.className   = "wrtc-thumb-label";
     lbl.textContent = tile.querySelector(".wrtc-tile-label")?.textContent || "";
     wrap.append(tv, lbl);
+
+    // Pin overlay — hover to reveal, click to pin this participant into spotlight
+    if (userId !== "local") {
+      const pinOverlay = document.createElement("div");
+      pinOverlay.className = "wrtc-thumb-pin";
+      const pinBtn = document.createElement("div");
+      pinBtn.className = "wrtc-thumb-pin-btn";
+      pinBtn.title = "Spotlight this participant";
+      pinBtn.innerHTML =
+        `<svg width="20" height="20" viewBox="0 0 24 24" fill="white">` +
+        `<path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>`;
+      pinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const tileId = `wrtc-tile-${userId}`;
+        // Restore tiles from presentation layout first, then enter focus mode
+        // (_presenterUserId stays set so exiting focus re-applies presenter layout)
+        this._clearPresenter();
+        this._enterFocusMode(tileId);
+      });
+      pinOverlay.appendChild(pinBtn);
+      wrap.appendChild(pinOverlay);
+    }
+
     thumbs.appendChild(wrap);
     // Canvas captureStreams require explicit play() — autoplay alone is not
     // reliable for programmatically created video elements.
@@ -2585,9 +2625,75 @@ class WebRTCMeetingAPI {
       }
     }
 
-    // Remove button — only rendered for host, hidden for self
-    // Use data-userid so the handler captures the correct ID at click time
+    // Host controls — only rendered for host, hidden for self
     if (this._isHost && !isMe) {
+      const _btnStyle =
+        "background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);cursor:pointer;"
+        + "padding:3px 9px;border-radius:6px;color:#e8eaed;font-size:11px;font-weight:500;"
+        + "font-family:inherit;transition:background .15s;flex-shrink:0;";
+
+      // ── Mic button ──────────────────────────────────────────────────────────
+      // Show "Mute" when mic is on, "Unmute" only when admin force-muted them,
+      // nothing when participant self-muted (no confusion).
+      const micOn = this._micStates[userId] !== false; // default: assume on if unknown
+      const adminMutedMic = this._hostForcedOffMic.has(userId);
+      if (micOn || adminMutedMic) {
+        const muteBtn = document.createElement("button");
+        muteBtn.dataset.uid = userId;
+        muteBtn.style.cssText = _btnStyle;
+        if (micOn) {
+          muteBtn.textContent = "Mute";
+          muteBtn.title = "Mute microphone";
+          muteBtn.addEventListener("click", () => {
+            this._sendWS({ type: "host-mute-user", payload: { target_id: userId } });
+            this._hostForcedOffMic.add(userId);
+            this._micStates[userId] = false;
+            this._renderParticipants();
+          });
+        } else {
+          muteBtn.textContent = "Unmute";
+          muteBtn.title = "Unmute microphone";
+          muteBtn.addEventListener("click", () => {
+            this._sendWS({ type: "host-unmute-user", payload: { target_id: userId } });
+            this._hostForcedOffMic.delete(userId);
+            this._micStates[userId] = true;
+            this._renderParticipants();
+          });
+        }
+        icons.appendChild(muteBtn);
+      }
+
+      // ── Cam button ──────────────────────────────────────────────────────────
+      // Show "Cam off" when cam is on, "Cam on" only when admin force-turned it off,
+      // nothing when participant self-turned it off (no confusion).
+      const camOn = this._camStates[userId] !== false; // default: assume on if unknown
+      const adminMutedCam = this._hostForcedOffCam.has(userId);
+      if (camOn || adminMutedCam) {
+        const camBtn = document.createElement("button");
+        camBtn.style.cssText = _btnStyle;
+        if (camOn) {
+          camBtn.textContent = "Cam off";
+          camBtn.title = "Turn off camera";
+          camBtn.addEventListener("click", () => {
+            this._sendWS({ type: "host-cam-off-user", payload: { target_id: userId } });
+            this._hostForcedOffCam.add(userId);
+            this._camStates[userId] = false;
+            this._renderParticipants();
+          });
+        } else {
+          camBtn.textContent = "Cam on";
+          camBtn.title = "Turn on camera";
+          camBtn.addEventListener("click", () => {
+            this._sendWS({ type: "host-cam-on-user", payload: { target_id: userId } });
+            this._hostForcedOffCam.delete(userId);
+            this._camStates[userId] = true;
+            this._renderParticipants();
+          });
+        }
+        icons.appendChild(camBtn);
+      }
+
+      // Remove button
       const removeBtn = document.createElement("button");
       removeBtn.title = "Remove from meeting";
       removeBtn.dataset.uid = userId;
@@ -2756,22 +2862,40 @@ class WebRTCMeetingAPI {
   }
 
   _startSpeakerDetection() {
-    this._speakerTimer = setInterval(() => {
-      const THRESHOLD = 8;
+    // Asymmetric EMA: fast attack, slow decay — gives snappy visual response.
+    const THRESHOLD = 8 / 255;
+    const RISE = 0.65, DECAY = 0.88;
+
+    const tick = () => {
+      this._speakerRafId = requestAnimationFrame(tick);
       let maxLevel = THRESHOLD, activeSpeaker = null;
+
       for (const [uid, analyser] of Object.entries(this._analysers)) {
-        const lvl = this._getAudioLevel(analyser);
-        if (lvl > maxLevel) { maxLevel = lvl; activeSpeaker = uid; }
+        const raw     = this._getAudioLevel(analyser) / 255;
+        const prev    = this._smoothedLevels[uid] || 0;
+        const smoothed = raw > prev ? prev + (raw - prev) * RISE : prev * DECAY;
+        this._smoothedLevels[uid] = smoothed;
+
+        // Drive per-tile mic ring
+        const ringId = uid === "local" ? "wrtc-mic-ring-local" : `wrtc-mic-ring-${uid}`;
+        const ring   = document.getElementById(ringId);
+        if (ring) {
+          const s = Math.min(1.8, 0.6 + smoothed * 9);
+          const o = Math.min(0.9, smoothed * 12);
+          ring.style.transform = `scale(${s.toFixed(3)})`;
+          ring.style.opacity   = o.toFixed(3);
+        }
+
+        if (smoothed > maxLevel) { maxLevel = smoothed; activeSpeaker = uid; }
       }
+
       if (activeSpeaker !== this._currentSpeaker) {
-        // Clear old highlight
         if (this._currentSpeaker) {
           const prev = this._currentSpeaker === "local"
             ? document.getElementById("wrtc-local-tile")
             : document.getElementById(`wrtc-tile-${this._currentSpeaker}`);
           prev?.classList.remove("speaking");
         }
-        // Set new highlight
         if (activeSpeaker) {
           const el = activeSpeaker === "local"
             ? document.getElementById("wrtc-local-tile")
@@ -2780,7 +2904,21 @@ class WebRTCMeetingAPI {
         }
         this._currentSpeaker = activeSpeaker;
       }
-    }, 200);
+    };
+
+    this._speakerRafId = requestAnimationFrame(tick);
+  }
+
+  /** Sync the local tile mic indicator icon with current mic state. */
+  _syncLocalMicTile() {
+    const on  = this._micEnabled;
+    const ind = document.getElementById("wrtc-mic-ind-local");
+    if (!ind) return;
+    ind.classList.toggle("muted", !on);
+    const onSvg  = ind.querySelector(".wrtc-mic-svg-on");
+    const offSvg = ind.querySelector(".wrtc-mic-svg-off");
+    if (onSvg)  onSvg.style.display  = on ? "" : "none";
+    if (offSvg) offSvg.style.display = on ? "none" : "";
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3231,8 +3369,9 @@ class WebRTCMeetingAPI {
   // FOCUS MODE
   // ═══════════════════════════════════════════════════════════════════════
   _enterFocusMode(tileId) {
-    if (this._isSharing || document.getElementById("wrtc-stage")?.classList.contains("presenting")) return;
-    if (Object.keys(this._peerConnections).length === 0) return;
+    // Count all tiles (local + remote) — works in both P2P and SFU modes
+    const totalTiles = document.querySelectorAll("#wrtc-grid .wrtc-tile").length;
+    if (totalTiles < 2) return; // only one person, nothing to focus on
 
     this._focusTileId = tileId;
     const grid      = document.getElementById("wrtc-grid");
@@ -3240,9 +3379,17 @@ class WebRTCMeetingAPI {
     const focusMain = document.getElementById("wrtc-focus-main");
     if (!grid || !focusWrap || !focusMain) return;
 
-    // Move focused tile into main panel
+    // Move focused tile into main panel — strip any presenter-mode overrides
     const tile = document.getElementById(tileId);
     if (!tile) return;
+    tile.classList.remove("presenter");
+    tile.style.removeProperty("width");
+    tile.style.removeProperty("height");
+    tile.style.removeProperty("position");
+    tile.style.removeProperty("top");
+    tile.style.removeProperty("left");
+    tile.style.removeProperty("right");
+    tile.style.removeProperty("bottom");
     focusMain.appendChild(tile);
 
     // Move all remaining grid tiles into the panel
@@ -3272,6 +3419,7 @@ class WebRTCMeetingAPI {
     if (focusTiles) {
       [...focusTiles.querySelectorAll(".wrtc-tile")].forEach(t => {
         t.style.display = "";
+        delete t.dataset.sidebarClick; // allow re-wiring on next focus entry
         grid.appendChild(t);
       });
     }
@@ -3283,7 +3431,14 @@ class WebRTCMeetingAPI {
     this._focusTileId       = null;
     focusWrap.style.display = "none";
     grid.style.display      = "";
-    this._updateGrid();
+    // Re-apply presentation layout if a share is still active
+    if (this._presenterUserId) {
+      this._setPresenter(this._presenterUserId); // someone else is sharing
+    } else if (this._isSharing) {
+      this._setLocalPresenter(); // local user is still sharing their screen
+    } else {
+      this._updateGrid();
+    }
   }
 
   _switchFocusTile(tileId) {
@@ -3318,21 +3473,47 @@ class WebRTCMeetingAPI {
       ...document.querySelectorAll("#wrtc-focus-tiles .wrtc-tile"),
     ].filter(t => t.id !== focusedId);
 
-    // Move them all into the panel
-    allOther.forEach(t => focusTiles.appendChild(t));
+    // Move them all into the panel; wire a click to switch spotlight
+    allOther.forEach(t => {
+      // Strip any presentation-mode overrides so the tile fits the sidebar correctly
+      t.classList.remove("presenter");
+      t.style.removeProperty("width");
+      t.style.removeProperty("height");
+      t.style.removeProperty("position");
+      t.style.removeProperty("top");
+      t.style.removeProperty("left");
+      t.style.removeProperty("right");
+      t.style.removeProperty("bottom");
+      focusTiles.appendChild(t);
+      // Mark sidebar tiles so we can attach click handler only once
+      if (!t.dataset.sidebarClick) {
+        t.dataset.sidebarClick = "1";
+        t.addEventListener("click", () => this._switchFocusTile(t.id));
+      }
+    });
 
-    // Show max 4 tiles, hide the rest
-    const MAX_PANEL = 4;
+    // Show all sidebar tiles — panel scrolls if more than ~4 fit
     const panelTiles = [...focusTiles.querySelectorAll(".wrtc-tile")];
-    panelTiles.forEach((t, i) => { t.style.display = i < MAX_PANEL ? "" : "none"; });
-
-    const overflow = Math.max(0, panelTiles.length - MAX_PANEL);
-    if (overflow > 0) {
-      focusMore.textContent  = `+${overflow} more`;
-      focusMore.style.display = "";
-    } else {
-      focusMore.style.display = "none";
-    }
+    panelTiles.forEach(t => {
+      t.style.display = "";
+      // Re-sync avatar visibility so it matches actual cam/share state
+      const av = t.querySelector(".wrtc-tile-avatar");
+      if (!av) return;
+      if (t.id === "wrtc-local-tile") {
+        // Local tile: hide avatar if camera on OR if sharing screen (tile shows share video)
+        av.classList.toggle("visible", !this._camEnabled && !this._isSharing);
+      } else {
+        const uid = t.id.replace("wrtc-tile-", "");
+        // Presenter tile: always hide avatar — tile shows screen share video, not a blank feed
+        if (uid === this._presenterUserId) {
+          av.classList.remove("visible");
+        } else {
+          const camOn = this._camStates[uid];
+          if (camOn !== undefined) av.classList.toggle("visible", !camOn);
+        }
+      }
+    });
+    if (focusMore) focusMore.style.display = "none";
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3416,6 +3597,10 @@ class WebRTCMeetingAPI {
         console.log(`[WRTC] WS closed permanently — no reconnect  code=${e.code}  isLeaving=${this._isLeaving}`);
         return;
       }
+
+      // Reset SFU state so the fresh WS session gets new transports/producers/consumers.
+      // Must happen before reconnect so _sfuInit() runs cleanly on the new connection.
+      this._sfuReset();
 
       // Unexpected disconnect (backend restart, network blip, etc.) — reconnect
       // with exponential backoff: 1 s, 2 s, 4 s, 8 s, 16 s, then cap at 30 s.
@@ -3760,7 +3945,8 @@ class WebRTCMeetingAPI {
           this._waitForPresenterVideo(from);
         } else {
           if (this._presenterUserId === from) this._presenterUserId = null;
-          this._clearPresenter();
+          // Only clear presenter layout if it was actually applied (i.e. viewer had no pin)
+          if (!this._focusTileId) this._clearPresenter();
           this._toast(`${name} stopped presenting`);
         }
         break;
@@ -3903,8 +4089,20 @@ class WebRTCMeetingAPI {
       case "cam-state": {
         if (from === this._myUserId) break; // ignore own echo
         this._camStates[from] = payload.enabled;
+        // If participant turned cam back on themselves, clear admin force-off tracking
+        if (payload.enabled) this._hostForcedOffCam.delete(from);
         const avatarEl = document.getElementById(`wrtc-avatar-${from}`);
         if (avatarEl) avatarEl.classList.toggle("visible", !payload.enabled);
+        if (this._isHost && this._panelTab === "people") this._renderParticipants();
+        break;
+      }
+
+      case "mic-state": {
+        if (from === this._myUserId) break; // ignore own echo
+        this._micStates[from] = payload.enabled;
+        // If participant turned mic back on themselves, clear admin force-off tracking
+        if (payload.enabled) this._hostForcedOffMic.delete(from);
+        if (this._isHost && this._panelTab === "people") this._renderParticipants();
         break;
       }
 
@@ -3922,53 +4120,127 @@ class WebRTCMeetingAPI {
       }
 
       case "mute-all":
-        if (!this._micEnabled) break; // already off by participant — host mute doesn't own it
+        // Always apply the lock — even if mic is already off (participant self-muted).
+        // Without this, a self-muted participant could unmute during a host mute-all.
         this._hostMutedMic = true;
+        this._micLocked    = true;
+        if (!this._micEnabled) break; // already off — lock set, no UI change needed
         this._micEnabled = false;
         this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
-        document.getElementById("wrtc-btn-mic")?.classList.add("muted");
+        document.getElementById("wrtc-btn-mic")?.classList.add("muted", "admin-locked");
+        document.getElementById("wrtc-btn-mic")?.setAttribute("title", "Disabled by host");
         if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "none";
         if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "";
+        this._syncLocalMicTile();
         this._toast("Your microphone was muted by the host");
         break;
 
       case "unmute-all":
-        if (!this._hostMutedMic) break; // host didn't mute me — don't force unmute
+        if (!this._hostMutedMic) break; // host didn't lock me — nothing to release
         this._hostMutedMic = false;
-        if (this._micEnabled) break; // already on
+        this._micLocked    = false; // release lock
+        // Don't turn mic on if participant self-muted — that was their own choice
+        if (this._selfMutedMic || this._micEnabled) break;
         this._micEnabled = true;
         this._localStream?.getAudioTracks().forEach(t => { t.enabled = true; });
-        document.getElementById("wrtc-btn-mic")?.classList.remove("muted");
+        document.getElementById("wrtc-btn-mic")?.classList.remove("muted", "admin-locked");
+        document.getElementById("wrtc-btn-mic")?.removeAttribute("title");
         if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "";
         if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "none";
+        this._syncLocalMicTile();
         this._toast("Your microphone was unmuted by the host");
         break;
 
       case "cam-mute-all":
-        if (!this._camEnabled) break; // already off by participant — host mute doesn't own it
+        // Always apply the lock — even if cam is already off (participant self-turned off).
         this._hostMutedCam = true;
+        this._camLocked    = true;
+        if (!this._camEnabled) break; // already off — lock set, no UI change needed
         this._camEnabled = false;
         this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
-        document.getElementById("wrtc-btn-cam")?.classList.add("muted");
+        document.getElementById("wrtc-btn-cam")?.classList.add("muted", "admin-locked");
+        document.getElementById("wrtc-btn-cam")?.setAttribute("title", "Disabled by host");
         if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "none";
         if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "";
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "none";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "flex";
-        this._toast("Your camera was muted by the host");
+        this._toast("Your camera was disabled by the host");
         break;
 
       case "cam-unmute-all":
-        if (!this._hostMutedCam) break;
+        if (!this._hostMutedCam) break; // host didn't lock me — nothing to release
         this._hostMutedCam = false;
-        if (this._camEnabled) break;
+        this._camLocked    = false; // release lock
+        // Don't turn cam on if participant self-turned it off — that was their own choice
+        if (this._selfMutedCam || this._camEnabled) break;
         this._camEnabled = true;
         this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
-        document.getElementById("wrtc-btn-cam")?.classList.remove("muted");
+        document.getElementById("wrtc-btn-cam")?.classList.remove("muted", "admin-locked");
+        document.getElementById("wrtc-btn-cam")?.removeAttribute("title");
         if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "";
         if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "none";
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "block";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "none";
-        this._toast("Your camera was unmuted by the host");
+        this._toast("Your camera was enabled by the host");
+        break;
+
+      // ── Per-user force mute/unmute from host ──────────────────────────────────
+      case "you-are-force-muted":
+        this._micLocked    = true;
+        this._hostMutedMic = true;
+        this._micEnabled   = false;
+        this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
+        document.getElementById("wrtc-btn-mic")?.classList.add("muted", "admin-locked");
+        document.getElementById("wrtc-btn-mic")?.setAttribute("title", "Disabled by host");
+        if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "none";
+        if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "";
+        this._syncLocalMicTile();
+        this._toast("Your microphone was disabled by the host");
+        break;
+
+      case "you-are-force-unmuted":
+        // Block if participant self-muted — admin cannot override their choice.
+        if (this._selfMutedMic) break;
+        this._micLocked    = false;
+        this._hostMutedMic = false;
+        this._micEnabled   = true;
+        this._localStream?.getAudioTracks().forEach(t => { t.enabled = true; });
+        document.getElementById("wrtc-btn-mic")?.classList.remove("muted", "admin-locked");
+        document.getElementById("wrtc-btn-mic")?.removeAttribute("title");
+        if (document.getElementById("wrtc-ico-mic"))     document.getElementById("wrtc-ico-mic").style.display     = "";
+        if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "none";
+        this._syncLocalMicTile();
+        this._toast("Your microphone was enabled by the host");
+        break;
+
+      case "you-are-force-cam-off":
+        this._camLocked    = true;
+        this._hostMutedCam = true;
+        this._camEnabled   = false;
+        this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+        document.getElementById("wrtc-btn-cam")?.classList.add("muted", "admin-locked");
+        document.getElementById("wrtc-btn-cam")?.setAttribute("title", "Disabled by host");
+        if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "none";
+        if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "";
+        if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "none";
+        if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "flex";
+        this._toast("Your camera was disabled by the host");
+        break;
+
+      case "you-are-force-cam-on":
+        // Block if participant self-muted — admin cannot override their choice.
+        if (this._selfMutedCam) break;
+        this._camLocked    = false;
+        this._hostMutedCam = false;
+        this._camEnabled   = true;
+        this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
+        document.getElementById("wrtc-btn-cam")?.classList.remove("muted", "admin-locked");
+        document.getElementById("wrtc-btn-cam")?.removeAttribute("title");
+        if (document.getElementById("wrtc-ico-cam"))     document.getElementById("wrtc-ico-cam").style.display     = "";
+        if (document.getElementById("wrtc-ico-cam-off")) document.getElementById("wrtc-ico-cam-off").style.display = "none";
+        if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "block";
+        if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "none";
+        this._toast("Your camera was enabled by the host");
         break;
 
       case "you-were-kicked":
@@ -4159,13 +4431,36 @@ class WebRTCMeetingAPI {
     hand.textContent = "✋";
     if (this._raisedHands.has(userId)) hand.classList.add("raised");
 
-    tile.addEventListener("click", () => {
+    // Pin overlay — appears on hover, click pins this participant to the main spotlight
+    const pinOverlay = document.createElement("div");
+    pinOverlay.className = "wrtc-tile-pin";
+    const pinBtn = document.createElement("div");
+    pinBtn.className = "wrtc-tile-pin-btn";
+    pinBtn.title = "Spotlight this participant";
+    pinBtn.innerHTML =
+      `<svg width="22" height="22" viewBox="0 0 24 24" fill="white">` +
+      `<path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>`;
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       if (this._focusTileId === tile.id) return;
       if (this._focusTileId) { this._switchFocusTile(tile.id); return; }
+      // If presenter layout is active, restore tiles first then enter focus
+      if (document.getElementById("wrtc-stage")?.classList.contains("presenting")) {
+        this._clearPresenter();
+      }
       this._enterFocusMode(tile.id);
     });
+    pinOverlay.appendChild(pinBtn);
 
-    tile.append(video, avatarWrap, badge, label, hand);
+    const micInd = document.createElement("div");
+    micInd.className = "wrtc-tile-mic";
+    micInd.id = `wrtc-mic-ind-${userId}`;
+    micInd.innerHTML =
+      `<div class="wrtc-tile-mic-ring" id="wrtc-mic-ring-${userId}"></div>` +
+      `<svg class="wrtc-mic-svg-on" width="13" height="13" viewBox="0 0 24 24" fill="white">` +
+      `<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>`;
+
+    tile.append(video, avatarWrap, badge, pinOverlay, micInd, label, hand);
     grid.appendChild(tile);
     this._updateGrid();
   }
@@ -4214,9 +4509,18 @@ class WebRTCMeetingAPI {
       }
       // Track mute events: "unmute" fires when black frames arrive (track.enabled=false
       // on sender), so only hide avatar if cam-state confirms camera is actually on.
+      // Guard against stale events: after _sfuReset() closes old consumers, their tracks
+      // fire async mute events that can arrive after the new stream is already wired up.
+      // Reject any event whose track is no longer part of the current peer stream.
       stream.getVideoTracks().forEach(track => {
-        track.addEventListener("mute",   () => avatarWrap.classList.add("visible"));
+        track.addEventListener("mute", () => {
+          const cur = this._sfuPeerStreams[userId];
+          if (cur && !cur.getTracks().includes(track)) return;
+          avatarWrap.classList.add("visible");
+        });
         track.addEventListener("unmute", () => {
+          const cur = this._sfuPeerStreams[userId];
+          if (cur && !cur.getTracks().includes(track)) return;
           if (this._camStates[userId] !== false) avatarWrap.classList.remove("visible");
         });
       });
@@ -4313,355 +4617,21 @@ class WebRTCMeetingAPI {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // VIRTUAL BACKGROUND
+  // SFU — mediasoup-client implementation (marker kept for grep below)
   // ═══════════════════════════════════════════════════════════════════════
 
-  _toggleVBGPanel() {
-    const overlay = document.getElementById("wrtc-vbg-overlay");
-    if (!overlay) return;
-    const open = overlay.style.display !== "none";
-    if (open) { this._closeVBGPanel(); return; }
-    overlay.style.display = "flex";
-    this._refreshVBGPanel();
-  }
-
-  _closeVBGPanel() {
-    const overlay = document.getElementById("wrtc-vbg-overlay");
-    if (overlay) overlay.style.display = "none";
-  }
-
-  _refreshVBGPanel() {
-    document.querySelectorAll(".wrtc-vbg-opt").forEach(el => {
-      el.classList.toggle("active", el.dataset.bg === this._bgFilter);
-    });
-  }
-
-  async _selectVBG(type) {
-    if (type === this._bgFilter) return;
-    this._bgFilter = type;
-    this._refreshVBGPanel();
-    sessionStorage.setItem("wrtc_bg_filter_" + this.roomName, type);
-    const statusEl = document.getElementById("wrtc-vbg-status");
-    const label    = document.getElementById("wrtc-more-vbg-label");
-
-    if (type === "none") {
-      await this._disableVirtualBg();
-      if (statusEl) statusEl.textContent = "";
-      if (label) label.textContent = "Virtual Background";
-      return;
-    }
-
-    if (statusEl) statusEl.textContent = "Loading background model…";
-    if (label) label.textContent = "Virtual Background ✓";
-    try {
-      await this._enableVirtualBg(type);
-      if (statusEl) statusEl.textContent = "";
-    } catch (e) {
-      console.warn("[VBG] failed:", e);
-      if (statusEl) statusEl.textContent = "Could not load background model — using normal video.";
-      this._bgFilter = "none";
-      this._refreshVBGPanel();
-      if (label) label.textContent = "Virtual Background";
-      await this._disableVirtualBg();
-    }
-  }
-
-  async _enableVirtualBg(type) {
-    // Pre-load background image (not needed for blur)
-    if (type !== "blur" && !this._bgImages[type]) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      await new Promise((res, rej) => {
-        img.onload = res;
-        img.onerror = () => rej(new Error("bg image load failed"));
-        img.src = `${this._httpBase}/api/v1/bg/${type}.jpg?v=2`;
-      });
-      this._bgImages[type] = img;
-    }
-
-    // Lazy-load MediaPipe Selfie Segmentation from CDN
-    await this._loadMediaPipe();
-
-    // Init the segmentation model once
-    if (!this._selfieSegmentation) {
-      const seg = new window.SelfieSegmentation({
-        locateFile: f =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/${f}`
-      });
-      seg.setOptions({ modelSelection: 1, selfieMode: true });
-      seg.onResults(r => this._onSegResults(r));
-      await seg.initialize();
-      this._selfieSegmentation = seg;
-    }
-
-    // Hidden source video — feeds raw camera into MediaPipe
-    if (!this._filterSrcVid) {
-      const vid = document.createElement("video");
-      vid.autoplay = true; vid.muted = true; vid.playsInline = true;
-      vid.style.cssText = "position:fixed;width:1px;height:1px;top:0;left:0;opacity:0;pointer-events:none";
-      document.body.appendChild(vid);
-      this._filterSrcVid = vid;
-    }
-    this._filterSrcVid.srcObject = this._localStream;
-    await this._filterSrcVid.play().catch(() => {});
-
-    // Output canvas — 480×270 keeps quality acceptable while halving pixel count vs 640×360
-    const W = 480, H = 270;
-    if (!this._filterCanvas) {
-      this._filterCanvas = document.createElement("canvas");
-      this._filterCanvas.width  = W;
-      this._filterCanvas.height = H;
-      this._filterCtx = this._filterCanvas.getContext("2d");
-    }
-
-    // Capture the canvas as a MediaStream
-    if (this._filterStream) this._filterStream.getTracks().forEach(t => t.stop());
-    this._filterStream = this._filterCanvas.captureStream(25);
-
-    // Replace video track in all active peer connections
-    const newTrack = this._filterStream.getVideoTracks()[0];
-    await this._replaceVideoTrackInPeers(newTrack);
-    this._renegotiateAll(); // renegotiate so peers get updated SDP for filter track
-
-    // Point the local preview at the filtered stream.
-    // The canvas has no frames yet when srcObject is first set, so play() may
-    // fail or stall. Retry at increasing intervals until the video is playing.
-    const lv = document.getElementById("wrtc-local-video");
-    if (lv) {
-      lv.srcObject = this._filterStream;
-      lv.style.display = "block";
-      document.getElementById("wrtc-pip-avatar").style.display = "none";
-      const _tryPlay = () => {
-        if (this._bgFilter === "none" || !this._filterStream) return;
-        if (lv.srcObject !== this._filterStream) lv.srcObject = this._filterStream;
-        lv.play().catch(() => {});
-      };
-      _tryPlay();
-      [100, 300, 700].forEach(ms => setTimeout(_tryPlay, ms));
-    }
-
-    // Update local thumb in the right-panel strip (visible when someone else is presenting).
-    // The thumb srcObject was captured at presentation start — we must update it now
-    // so the filter appears in the user's own thumbnail during screen share.
-    const localThumb = document.querySelector(
-      '#wrtc-thumbs .wrtc-thumb-tile[data-user-id="wrtc-local-tile"] video'
-    );
-    if (localThumb) {
-      const _tryThumbPlay = () => {
-        if (this._bgFilter === "none" || !this._filterStream) return;
-        if (localThumb.srcObject !== this._filterStream) localThumb.srcObject = this._filterStream;
-        localThumb.play().catch(() => {});
-      };
-      _tryThumbPlay();
-      [100, 300, 700].forEach(ms => setTimeout(_tryThumbPlay, ms));
-    }
-
-    // Start the per-frame processing loop
-    this._stopFilterLoop();
-    this._filterTick();
-  }
-
-  async _disableVirtualBg() {
-    this._stopFilterLoop();
-
-    // Replace track in peers BEFORE stopping the filter stream so the SFU
-    // producer never holds a dead/ended track even for a moment.
-    const origTrack = this._localStream?.getVideoTracks()[0] ?? null;
-    await this._replaceVideoTrackInPeers(origTrack);
-    this._renegotiateAll();
-
-    // Now safe to tear down the filter stream
-    if (this._filterStream) {
-      this._filterStream.getTracks().forEach(t => t.stop());
-      this._filterStream = null;
-    }
-
-    // Restore local preview — play() is required after changing srcObject
-    const lv = document.getElementById("wrtc-local-video");
-    if (lv) {
-      lv.srcObject = this._localStream;
-      lv.play().catch(() => {});
-    }
-
-    // Restore local thumb in right-panel strip to raw camera stream
-    const localThumb = document.querySelector(
-      '#wrtc-thumbs .wrtc-thumb-tile[data-user-id="wrtc-local-tile"] video'
-    );
-    if (localThumb) {
-      localThumb.srcObject = this._localStream;
-      localThumb.play().catch(() => {});
-    }
-  }
-
   // Returns the video track that should be sent to peers right now.
-  // Priority: screen share > virtual background filter > raw camera.
-  // Used when wiring new peer connections so they receive the correct track
-  // even if they connect after _replaceVideoTrack() was called for existing peers.
+  // Priority: screen share > raw camera.
   _activeVideoTrack() {
     if (this._isSharing && this._shareStream) {
       return this._shareStream.getVideoTracks()[0] ?? null;
-    }
-    if (this._bgFilter !== "none" && this._filterStream) {
-      return this._filterStream.getVideoTracks()[0] ?? null;
     }
     return this._localStream?.getVideoTracks()[0] ?? null;
   }
 
   // Returns the stream that should be shown in the local video preview.
-  // When a filter is active use _filterStream, otherwise _localStream.
   _activeVideoStream() {
-    return (this._bgFilter !== "none" && this._filterStream) ? this._filterStream : this._localStream;
-  }
-
-  _stopFilterLoop() {
-    if (this._filterAnimId) {
-      cancelAnimationFrame(this._filterAnimId);
-      this._filterAnimId = null;
-    }
-  }
-
-  async _filterTick() {
-    if (this._bgFilter === "none" || !this._filterSrcVid || !this._selfieSegmentation) return;
-    const now = performance.now();
-    // Throttle to 20fps — avoids CPU saturation on mid/low-end devices
-    if (this._filterSrcVid.readyState >= 2 &&
-        (!this._lastFilterTime || now - this._lastFilterTime >= 50)) {
-      this._lastFilterTime = now;
-      try { await this._selfieSegmentation.send({ image: this._filterSrcVid }); }
-      catch (err) {
-        console.warn("[VBG] _filterTick: selfieSegmentation.send failed", err);
-      }
-    }
-    this._filterAnimId = requestAnimationFrame(() => this._filterTick());
-  }
-
-  _onSegResults(results) {
-    const ctx = this._filterCtx;
-    if (!ctx || !this._filterCanvas) {
-      console.warn("[VBG] _onSegResults: ctx or filterCanvas is null — skipping frame");
-      return;
-    }
-    const W = this._filterCanvas.width;
-    const H = this._filterCanvas.height;
-
-    // Diagnostic counter — log every ~1 s (at 20 fps that is every 20th frame).
-    // IMPORTANT: diagnostics ONLY read from _filterCtx via getImageData (safe —
-    // same 2D context, no GPU readback issues).  They never draw results.image or
-    // results.segmentationMask to a secondary canvas, which would consume
-    // MediaPipe's internal WebGL frame and leave the main compositing with blank
-    // textures — that was the root cause of the all-black screen.
-    this._dbgSegFrame = (this._dbgSegFrame || 0) + 1;
-    const _logNow = (this._dbgSegFrame % 20 === 1);
-
-    if (_logNow) {
-      const maskDesc = results.segmentationMask
-        ? `${results.segmentationMask.constructor?.name || "Canvas"} ${results.segmentationMask.width}×${results.segmentationMask.height}`
-        : "MISSING";
-      const imgDesc = results.image
-        ? `${results.image.constructor?.name || "?"} ${results.image.videoWidth || results.image.width || "?"}×${results.image.videoHeight || results.image.height || "?"}`
-        : "MISSING";
-      console.log(
-        `[VBG] frame #${this._dbgSegFrame}  filter=${this._bgFilter}  canvas=${W}×${H}` +
-        `  mask: ${maskDesc}  image: ${imgDesc}` +
-        (this._bgFilter !== "blur"
-          ? `  bgImg: complete=${this._bgImages[this._bgFilter]?.complete} ` +
-            `${this._bgImages[this._bgFilter]?.naturalWidth}×${this._bgImages[this._bgFilter]?.naturalHeight}`
-          : "")
-      );
-    }
-
-    ctx.save();
-    ctx.clearRect(0, 0, W, H);
-
-    // ── Step 1: Draw the segmentation mask ────────────────────────────────────
-    // CRITICAL: draw directly to _filterCtx — do NOT draw results.segmentationMask
-    // or results.image to any secondary/temp canvas for diagnostics. MediaPipe
-    // uses a single shared WebGL context for both; a secondary drawImage call
-    // triggers a GPU flush and clears both textures, leaving blank data for the
-    // compositing steps below. All pixel inspection must use ctx.getImageData()
-    // on _filterCtx AFTER each draw step.
-    ctx.drawImage(results.segmentationMask, 0, 0, W, H);
-
-    if (_logNow) {
-      // Read from _filterCtx itself — safe, no WebGL involvement.
-      const mCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
-      const mCorner = ctx.getImageData(2, 2, 1, 1).data;
-      console.log(
-        `[VBG] after-mask  centre=(${mCentre[0]},${mCentre[1]},${mCentre[2]},${mCentre[3]})` +
-        `  corner=(${mCorner[0]},${mCorner[1]},${mCorner[2]},${mCorner[3]})`
-      );
-      // Interpretation guide:
-      //   centre alpha≈0,  corner alpha≈255 → mask is bg=opaque  person=transparent → source-out correct
-      //   centre alpha≈255, corner alpha≈0  → mask is bg=transparent person=opaque  → source-in correct
-      //   centre=(0,0,0,0) corner=(0,0,0,0) → mask drew nothing (WebGL issue or no person detected)
-      const ca = mCentre[3], ka = mCorner[3];
-      console.log(`[VBG] mask orientation guess: centre-alpha=${ca} corner-alpha=${ka}` +
-        (ca < 64 && ka > 192 ? " → bg=OPAQUE person=TRANSPARENT → source-out ✓" :
-         ca > 192 && ka < 64 ? " → bg=TRANSPARENT person=OPAQUE → should use source-in!" :
-         " → ambiguous (both zero or equal) — mask may not be drawing"));
-    }
-
-    // ── Step 2: source-out — camera drawn only in person area ─────────────────
-    // With the mask having bg=opaque (alpha≈255) and person=transparent (alpha≈0),
-    // source-out draws the camera frame only where the mask is transparent = the
-    // person's area.  Using source-in here would clip the camera to the opaque
-    // background region — that was the original "person invisible" bug.
-    ctx.globalCompositeOperation = 'source-out';
-    ctx.drawImage(results.image, 0, 0, W, H);
-
-    if (_logNow) {
-      const pCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
-      console.log(
-        `[VBG] after-source-out+camera  centre=(${pCentre[0]},${pCentre[1]},${pCentre[2]},${pCentre[3]})`
-      );
-      // Expected: centre pixel should now have camera colours (skin tone / clothing).
-      // If still (0,0,0,x): the camera frame itself is black or unreadable.
-    }
-
-    // ── Step 3: destination-atop — background fills the rest ─────────────────
-    // Person area (opaque camera pixels from step 2) is preserved.
-    // Background area (transparent after source-out) is filled with the virtual
-    // background image or blur.
-    ctx.globalCompositeOperation = 'destination-atop';
-    if (this._bgFilter === 'blur') {
-      ctx.filter = 'blur(14px)';
-      ctx.drawImage(results.image, 0, 0, W, H);
-      ctx.filter = 'none';
-    } else {
-      const bgImg = this._bgImages[this._bgFilter];
-      if (bgImg?.complete) {
-        ctx.drawImage(bgImg, 0, 0, W, H);
-      } else {
-        console.warn(`[VBG] bgImage "${this._bgFilter}" not ready — using fallback colour`);
-        ctx.fillStyle = '#1a1d28';
-        ctx.fillRect(0, 0, W, H);
-      }
-    }
-
-    ctx.restore();
-
-    if (_logNow) {
-      const fCentre = ctx.getImageData(Math.floor(W / 2), Math.floor(H / 2), 1, 1).data;
-      const fCorner = ctx.getImageData(2, 2, 1, 1).data;
-      console.log(
-        `[VBG] FINAL  centre=(${fCentre[0]},${fCentre[1]},${fCentre[2]},${fCentre[3]})` +
-        `  corner=(${fCorner[0]},${fCorner[1]},${fCorner[2]},${fCorner[3]})`
-      );
-      // Expected: centre = camera colours (person visible), corner = bgImage colours.
-    }
-  }
-
-  async _replaceVideoTrackInPeers(newTrack) {
-    if (this._sfuAvailable && this._sfuVideoProducer) {
-      try { await this._sfuVideoProducer.replaceTrack({ track: newTrack }); } catch (_) {}
-      return;
-    }
-    for (const pc of Object.values(this._peerConnections)) {
-      const sender = pc.getSenders().find(s => s.track?.kind === "video");
-      if (sender) {
-        try { await sender.replaceTrack(newTrack); } catch (_) {}
-      }
-    }
+    return this._localStream;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -4678,6 +4648,33 @@ class WebRTCMeetingAPI {
       s.onerror = () => reject(new Error('Failed to load mediasoup-client'));
       document.head.appendChild(s);
     });
+  }
+
+  /**
+   * Tear down all mediasoup-client objects so _sfuInit() can run cleanly on
+   * the next WebSocket reconnect.  Called from onclose before rescheduling.
+   */
+  _sfuReset() {
+    try { this._sfuSendTransport?.close(); } catch (_) {}
+    try { this._sfuRecvTransport?.close(); } catch (_) {}
+    try { this._sfuAudioProducer?.close(); } catch (_) {}
+    try { this._sfuVideoProducer?.close(); } catch (_) {}
+    for (const { consumer } of Object.values(this._sfuConsumers)) {
+      try { consumer.close(); } catch (_) {}
+    }
+    this._sfuSendTransport   = null;
+    this._sfuRecvTransport   = null;
+    this._sfuAudioProducer   = null;
+    this._sfuVideoProducer   = null;
+    this._sfuConsumers       = {};
+    this._sfuPeerStreams      = {};
+    this._sfuResolvers       = {};
+    this._sfuProduceCallback = null;
+    this._sfuDevice          = null;
+    this._sfuRtpCaps         = null;
+    this._sfuAvailable       = false;
+    this._sfuInitDone        = false;  // ← critical: allows _sfuInit() to run again
+    this._log('SFU state reset for reconnect');
   }
 
   /**
@@ -4828,18 +4825,6 @@ class WebRTCMeetingAPI {
     delete this._sfuPeerStreams[peerId];
   }
 
-  _loadMediaPipe() {
-    return new Promise((resolve, reject) => {
-      if (window.SelfieSegmentation) { resolve(); return; }
-      const s = document.createElement("script");
-      s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js";
-      s.crossOrigin = "anonymous";
-      s.onload  = resolve;
-      s.onerror = () => reject(new Error("Failed to load MediaPipe from CDN"));
-      document.head.appendChild(s);
-    });
-  }
-
   _doLeave() {
     this._isLeaving = true;
     // Replace parentNode content with leaving overlay so it's removed when React navigates
@@ -4857,7 +4842,6 @@ class WebRTCMeetingAPI {
     sessionStorage.removeItem('wrtc_start_' + this.roomName);
     sessionStorage.removeItem('wrtc_chat_' + this.roomName);
     sessionStorage.removeItem('wrtc_ready_dismissed_' + this.roomName);
-    sessionStorage.removeItem('wrtc_bg_filter_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
     // Close SFU producers and transports before disconnecting
     try { this._sfuVideoProducer?.close(); } catch (_) {}
@@ -4867,13 +4851,10 @@ class WebRTCMeetingAPI {
     Object.keys(this._peerConnections).forEach(id => this._cleanupPeer(id));
     this._ws?.close();
     this._localStream?.getTracks().forEach(t => t.stop());
-    this._filterStream?.getTracks().forEach(t => t.stop());
-    this._stopFilterLoop();
-    if (this._filterSrcVid) { this._filterSrcVid.srcObject = null; this._filterSrcVid.remove(); this._filterSrcVid = null; }
     this._shareStream?.getTracks().forEach(t => t.stop());
     if (this._isRecording) this._mediaRecorder?.stop();
     clearInterval(this._clockTimer);
-    clearInterval(this._speakerTimer);
+    if (this._speakerRafId) { cancelAnimationFrame(this._speakerRafId); this._speakerRafId = null; }
     if (this._audioCtx) { this._audioCtx.close(); this._audioCtx = null; }
     const lv = document.getElementById("wrtc-local-video"); if (lv) lv.srcObject = null;
     this._setStatus("err");

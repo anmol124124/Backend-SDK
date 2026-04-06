@@ -172,7 +172,8 @@ _SFU_TYPES = {                                       # handled by mediasoup
     "sfu:resumeConsumer",
     "sfu:getProducers",
 }
-_CTRL_TYPES  = {"leave", "knock-approve", "knock-deny", "kick", "transfer-host", "end-meeting"}
+_CTRL_TYPES  = {"leave", "knock-approve", "knock-deny", "kick", "transfer-host", "end-meeting",
+                "host-mute-user", "host-unmute-user", "host-cam-off-user", "host-cam-on-user"}
 
 
 def _get_token_type(token: str) -> str | None:
@@ -198,7 +199,7 @@ def _get_token_role(token: str) -> str | None:
     except JWTError:
         return None
 
-_ROOM_TYPES  = {"chat", "chat-private", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all", "cam-state"}
+_ROOM_TYPES  = {"chat", "chat-private", "raise-hand", "name", "presenting", "mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all", "cam-state", "mic-state"}
 _ALL_TYPES   = _P2P_TYPES | _SFU_TYPES | _CTRL_TYPES | _ROOM_TYPES
 
 
@@ -999,6 +1000,28 @@ async def signaling_endpoint(
                         kicked_base = target_id.rsplit("_", 1)[0]
                         manager.remove_admitted(room_id, kicked_base)
                         logger.info("Kick  room=%s  target=%s  by_host=%s", room_id, target_id, user_id)
+                continue
+
+            # ── per-user force mute/cam (host only) ────────────────────────────
+            if msg_type in ("host-mute-user", "host-unmute-user",
+                            "host-cam-off-user", "host-cam-on-user"):
+                if manager.is_host(room_id, user_id):
+                    target_id = payload.get("target_id")
+                    out_type = {
+                        "host-mute-user":    "you-are-force-muted",
+                        "host-unmute-user":  "you-are-force-unmuted",
+                        "host-cam-off-user": "you-are-force-cam-off",
+                        "host-cam-on-user":  "you-are-force-cam-on",
+                    }[msg_type]
+                    if target_id and manager.is_connected(room_id, target_id):
+                        await manager.send_personal(
+                            room_id, target_id,
+                            {"type": out_type, "from": user_id, "payload": {}},
+                        )
+                        logger.info(
+                            "Host force-control  room=%s  type=%s  target=%s  by=%s",
+                            room_id, msg_type, target_id, user_id,
+                        )
                 continue
 
             # ── transfer-host (host only) ──────────────────────────────────────
