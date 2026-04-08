@@ -42,11 +42,23 @@ PLAN_PROJECT_LIMITS: dict[str | None, int | None] = {
 # Max simultaneous non-host participants per meeting (host is always free)
 # Total room capacity = limit + 1 (host)
 PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
-    None:      5,      # free  → 5 participants + host = 6 total
-    "basic":   5,
-    "pro":    20,
+    None:      100,    # free  → 100 participants
+    "basic":   100,
+    "pro":     300,
     "premium": None,   # unlimited
 }
+
+# Max meeting duration in minutes (None = unlimited)
+PLAN_TIME_LIMITS: dict[str | None, int | None] = {
+    None:      40,     # free  → 40 minutes
+    "basic":   1440,   # basic → 24 hours
+    "pro":     None,   # unlimited
+    "premium": None,   # unlimited
+}
+
+# Fixed limits for public-meet meetings (apply regardless of host plan)
+PUBLIC_MEETING_PARTICIPANT_LIMIT: int = 100
+PUBLIC_MEETING_TIME_LIMIT_MINUTES: int = 40
 
 
 def _current_month() -> str:

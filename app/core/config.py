@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_PUBLISHABLE_KEY: str = ""
 
+    # ── Brevo (transactional email via SMTP) ─────────────────────────────
+    BREVO_SMTP_KEY: str = ""          # SMTP password from Brevo (xsmtpsib-...)
+    BREVO_SMTP_LOGIN: str = ""        # Your Brevo account email address
+    BREVO_SENDER_EMAIL: str = "noreply@antier.xyz"
+    BREVO_SENDER_NAME: str = "RoomLy"
+
     # ── Secret validation ─────────────────────────────────────────────────
     # Fail at startup if secrets are missing or left as placeholder values.
     # This prevents deploying with known-insecure defaults.

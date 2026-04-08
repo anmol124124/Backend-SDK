@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +16,9 @@ class MeetingSettings(BaseModel):
 class CreateMeetingRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Meeting display name")
     settings: MeetingSettings = Field(default_factory=MeetingSettings)
+    scheduled_at: Optional[str] = None   # "YYYY-MM-DDTHH:MM:SS" in the given timezone
+    timezone: str = "UTC"
+    invitees: list[str] = Field(default_factory=list)
 
 
 class CreateMeetingResponse(BaseModel):
@@ -33,6 +39,7 @@ class MeetingListItem(BaseModel):
     name: str
     url: str
     is_active: bool
+    scheduled_at: Optional[datetime] = None
 
 
 class GuestTokenRequest(BaseModel):

@@ -35,6 +35,8 @@ class ConnectionManager:
         self._permanent_hosts: dict[str, str] = {}
         # grace period asyncio tasks (host absent → end meeting after timeout)
         self._grace_tasks: dict[str, asyncio.Task] = {}
+        # time limit asyncio tasks (plan-based meeting duration limit)
+        self._time_limit_tasks: dict[str, asyncio.Task] = {}
         # pending guests waiting for host approval
         # room_id → { user_id → { ws, name, event, approved } }
         self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -133,6 +135,9 @@ class ConnectionManager:
             self._admitted_guests.pop(meeting_id, None)
             self._public_chat.pop(meeting_id, None)
             self.cancel_host_grace(meeting_id)
+            # NOTE: do NOT cancel time limit here — the meeting clock must not
+            # reset if the host briefly disconnects and the room temporarily empties.
+            # Time limit is cancelled only on explicit meeting end or when it fires.
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
 
     # ── Host management ───────────────────────────────────────────────────────
@@ -170,6 +175,22 @@ class ConnectionManager:
 
     def cancel_host_grace(self, meeting_id: str) -> None:
         task = self._grace_tasks.pop(meeting_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    # ── Time limit (plan-based meeting duration) ───────────────────────────────
+
+    def start_time_limit(self, meeting_id: str, on_expire_coro, timeout_seconds: int) -> None:
+        """Start a time-limit countdown. No-op if a timer is already running for this room."""
+        if meeting_id in self._time_limit_tasks and not self._time_limit_tasks[meeting_id].done():
+            return
+        async def _task():
+            await asyncio.sleep(timeout_seconds)
+            await on_expire_coro()
+        self._time_limit_tasks[meeting_id] = asyncio.create_task(_task())
+
+    def cancel_time_limit(self, meeting_id: str) -> None:
+        task = self._time_limit_tasks.pop(meeting_id, None)
         if task and not task.done():
             task.cancel()
 

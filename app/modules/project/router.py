@@ -19,9 +19,11 @@ from app.modules.project.schemas import (
     DomainAddRequest,
     DomainResponse,
     EmbedResponse,
+    EmbedScheduleInviteRequest,
     ProjectCreateRequest,
     ProjectMeetingResponse,
     ProjectResponse,
+    ScheduleInviteRequest,
     SdkJoinResponse,
 )
 from app.modules.project.service import ProjectService, _make_guest_token
@@ -119,6 +121,7 @@ async def my_meetings(
             host_token=m.host_token,
             share_url=f"{public_meet_url}/sdk/join/{m.room_name}",
             created_at=m.created_at,
+            scheduled_at=m.scheduled_at,
         )
         for m in meetings
     ]
@@ -601,6 +604,131 @@ async def upload_logo(
 
     logo_url = f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{relative_path}"
     return {"logo_url": logo_url}
+
+
+@router.post("/embed-schedule-invite")
+async def embed_schedule_invite(
+    payload: EmbedScheduleInviteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Send scheduled meeting invitation emails using an embed token (no dashboard auth needed)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    import asyncio
+    from jose import JWTError, jwt as jose_jwt
+    from fastapi import HTTPException
+    from app.modules.public_meeting.service import _send_invites_smtp
+    import uuid as _uuid
+
+    if not payload.invitees:
+        raise HTTPException(status_code=400, detail="At least one invitee email is required")
+
+    # Decode embed_token to get project_id
+    try:
+        token_payload = jose_jwt.decode(
+            payload.embed_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid embed token")
+
+    raw_project_id = token_payload.get("project_id")
+    if not raw_project_id or token_payload.get("role") != "host":
+        raise HTTPException(status_code=403, detail="Not a host token")
+
+    project_id = _uuid.UUID(raw_project_id)
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    try:
+        tz = ZoneInfo(payload.timezone)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
+        payload.timezone = "UTC"
+
+    naive_dt = datetime.fromisoformat(payload.scheduled_at)
+    scheduled_at_local = naive_dt.replace(tzinfo=tz)
+    # Create a ProjectMeeting record for the scheduled meeting so it appears in the list
+    scheduled_meeting = await ProjectService.create_project_meeting(
+        db, project_id, payload.meeting_title
+    )
+    # Set scheduled_at on the just-created meeting
+    scheduled_meeting.scheduled_at = scheduled_at_local
+    await db.commit()
+    await db.refresh(scheduled_meeting)
+
+    join_url = f"{settings.PUBLIC_MEET_URL}/sdk/join/{scheduled_meeting.room_name}"
+
+    try:
+        await asyncio.to_thread(
+            _send_invites_smtp,
+            payload.invitees,
+            payload.meeting_title,
+            join_url,
+            scheduled_at_local,
+            payload.timezone,
+        )
+        logger.info(
+            "Embed schedule invites sent  project_id=%s  room=%s  recipients=%d",
+            project_id, scheduled_meeting.room_name, len(payload.invitees),
+        )
+    except Exception as exc:
+        logger.warning("Embed schedule invite SMTP error  project_id=%s  error=%s", project_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to send invites: {exc}")
+
+    return {"ok": True, "sent": len(payload.invitees)}
+
+
+@router.post("/{project_id}/schedule-invite")
+async def schedule_meeting_invite(
+    project_id: UUID,
+    payload: ScheduleInviteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send scheduled meeting invitation emails for a project room."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    import asyncio
+    from app.modules.public_meeting.service import _send_invites_smtp
+
+    project = await ProjectService.get_project(db, project_id, user.id)
+
+    if not payload.invitees:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="At least one invitee email is required")
+
+    try:
+        tz = ZoneInfo(payload.timezone)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo("UTC")
+        payload.timezone = "UTC"
+
+    naive_dt = datetime.fromisoformat(payload.scheduled_at)
+    scheduled_at_local = naive_dt.replace(tzinfo=tz)
+
+    join_url = f"{settings.PUBLIC_MEET_URL}/sdk/{project.room_name}"
+
+    try:
+        await asyncio.to_thread(
+            _send_invites_smtp,
+            payload.invitees,
+            payload.meeting_title,
+            join_url,
+            scheduled_at_local,
+            payload.timezone,
+        )
+        logger.info(
+            "Project schedule invites sent  project_id=%s  room=%s  recipients=%d",
+            project_id, project.room_name, len(payload.invitees),
+        )
+    except Exception as exc:
+        logger.warning("Project schedule invite SMTP error  project_id=%s  error=%s", project_id, exc)
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Failed to send invites: {exc}")
+
+    return {"ok": True, "sent": len(payload.invitees)}
 
 
 @router.delete("/{project_id}/logo")

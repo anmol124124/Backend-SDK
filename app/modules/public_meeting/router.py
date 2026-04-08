@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,11 +39,24 @@ async def create_meeting(
     Create a new public meeting room. Auth optional — if logged in, meeting is saved to your list.
     Returns the room code and shareable URL.
     """
+    # Convert the raw "YYYY-MM-DDTHH:MM:SS" string in the user's chosen timezone to UTC
+    scheduled_at_utc = None
+    if payload.scheduled_at:
+        try:
+            tz = ZoneInfo(payload.timezone)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("UTC")
+        naive_dt = datetime.fromisoformat(payload.scheduled_at)
+        scheduled_at_utc = naive_dt.replace(tzinfo=tz)
+
     return await service.create_meeting(
         name=payload.name,
         db=db,
         user_id=current_user.id if current_user else None,
         perms=payload.settings,
+        scheduled_at=scheduled_at_utc,
+        timezone=payload.timezone,
+        invitees=payload.invitees,
     )
 
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,13 @@ class PublicMeeting(Base):
         nullable=True,
         index=True,
     )
+
+    # ── Schedule fields ──────────────────────────────────────────────────────
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Comma-separated list of invitee email addresses
+    invitees: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # ── Participant permissions ───────────────────────────────────────────────
     require_approval: Mapped[bool]             = mapped_column(Boolean, default=True,  nullable=False)

@@ -230,6 +230,31 @@ class WebRTCMeetingAPI {
       .ep-empty{color:#9aa0a6;font-size:14px;text-align:center;padding:8px 0}
       .ep-spin{width:28px;height:28px;border:3px solid rgba(255,255,255,.1);border-top-color:#1a73e8;border-radius:50%;animation:ep-s .8s linear infinite;margin:8px auto}
       @keyframes ep-s{to{transform:rotate(360deg)}}
+      .ep-sched-btn{background:transparent;color:#9aa0a6;border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:11px;font-size:14px;font-weight:500;cursor:pointer;width:100%;margin-top:8px;transition:all .15s}
+      .ep-sched-btn:hover{color:#e8eaed;border-color:rgba(255,255,255,.28)}
+      .ep-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px}
+      .ep-modal{background:#1e2230;border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:28px 28px 24px;width:100%;max-width:460px;max-height:90vh;overflow-y:auto;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8eaed}
+      .ep-modal h3{font-size:17px;font-weight:700;margin:0 0 4px}
+      .ep-modal-sub{font-size:13px;color:#9aa0a6;margin-bottom:20px}
+      .ep-label{font-size:12px;color:#9aa0a6;font-weight:500;margin-bottom:6px;display:block;letter-spacing:.03em}
+      .ep-field{margin-bottom:14px}
+      .ep-grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+      .ep-inp2{background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px;color:#e8eaed;font-size:14px;width:100%;outline:none;box-sizing:border-box}
+      .ep-inp2:focus{border-color:#1a73e8}.ep-inp2::placeholder{color:#5f6368}
+      .ep-inp2 option{background:#1e2230}
+      .ep-tag-wrap{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+      .ep-tag{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:3px 10px 3px 12px;font-size:12px;color:#e8eaed}
+      .ep-tag button{background:none;border:none;cursor:pointer;color:#9aa0a6;padding:0;line-height:1;font-size:14px}
+      .ep-add-row{display:flex;gap:8px}
+      .ep-add-btn{background:rgba(255,255,255,.08);color:#e8eaed;border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 16px;font-size:14px;font-weight:500;cursor:pointer;white-space:nowrap}
+      .ep-add-btn:hover{background:rgba(255,255,255,.13)}
+      .ep-modal-err{color:#ea4335;font-size:13px;margin:0 0 10px;display:none}
+      .ep-modal-ok{color:#34a853;font-size:13px;margin:0 0 10px;display:none}
+      .ep-modal-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}
+      .ep-cancel{background:transparent;color:#9aa0a6;border:1.5px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 20px;font-size:14px;font-weight:500;cursor:pointer}
+      .ep-cancel:hover{color:#e8eaed}
+      .ep-send{background:linear-gradient(135deg,#1a73e8,#4d94ff);color:#fff;border:none;border-radius:10px;padding:10px 24px;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 16px rgba(26,115,232,.35)}
+      .ep-send:disabled{opacity:.5;cursor:not-allowed}
     </style>
     <div class="ep">
       <div class="ep-hdr"><h2 id="ep-title">Meeting Room</h2><p>Create a new meeting or join a previous one</p></div>
@@ -237,8 +262,64 @@ class WebRTCMeetingAPI {
         <input id="ep-inp" class="ep-input" type="text" placeholder="Enter meeting title…" maxlength="255"/>
         <div id="ep-err" class="ep-err"></div>
         <button id="ep-create" class="ep-btn">Create &amp; Start</button>
+        <button id="ep-sched-open" class="ep-sched-btn">&#128197; Schedule Meeting</button>
       </div>
-      <div class="ep-card"><h3>Previous Meetings</h3><div id="ep-list"><div class="ep-spin"></div></div></div>
+      <div class="ep-card" id="ep-card-instant"><h3>Instant Meetings</h3><div id="ep-list-instant"><div class="ep-spin"></div></div></div>
+      <div class="ep-card" id="ep-card-sched-list"><h3>Scheduled Meetings</h3><div id="ep-list-sched"><div class="ep-spin"></div></div></div>
+    </div>
+    <div id="ep-sched-overlay" class="ep-overlay" style="display:none">
+      <div class="ep-modal">
+        <h3>Schedule Meeting</h3>
+        <p class="ep-modal-sub">Send calendar invites to participants</p>
+        <div class="ep-field">
+          <label class="ep-label">Meeting Title</label>
+          <input id="ep-s-title" class="ep-inp2" type="text" placeholder="e.g. Weekly Sync" maxlength="255"/>
+        </div>
+        <div class="ep-grid2">
+          <div class="ep-field">
+            <label class="ep-label">Date</label>
+            <input id="ep-s-date" class="ep-inp2" type="date"/>
+          </div>
+          <div class="ep-field">
+            <label class="ep-label">Time</label>
+            <input id="ep-s-time" class="ep-inp2" type="time"/>
+          </div>
+        </div>
+        <div class="ep-field">
+          <label class="ep-label">Timezone</label>
+          <select id="ep-s-tz" class="ep-inp2">
+            <option value="UTC">UTC</option>
+            <option value="America/New_York">US/Eastern (ET)</option>
+            <option value="America/Chicago">US/Central (CT)</option>
+            <option value="America/Denver">US/Mountain (MT)</option>
+            <option value="America/Los_Angeles">US/Pacific (PT)</option>
+            <option value="Europe/London">London (GMT/BST)</option>
+            <option value="Europe/Paris">Paris/Berlin (CET)</option>
+            <option value="Europe/Moscow">Moscow (MSK)</option>
+            <option value="Asia/Dubai">Dubai (GST)</option>
+            <option value="Asia/Kolkata">India (IST)</option>
+            <option value="Asia/Dhaka">Bangladesh (BST)</option>
+            <option value="Asia/Singapore">Singapore/KL (SGT)</option>
+            <option value="Asia/Tokyo">Tokyo/Seoul (JST/KST)</option>
+            <option value="Australia/Sydney">Sydney (AEST)</option>
+            <option value="America/Sao_Paulo">São Paulo (BRT)</option>
+          </select>
+        </div>
+        <div class="ep-field">
+          <label class="ep-label">Invite Participants</label>
+          <div class="ep-add-row">
+            <input id="ep-s-email" class="ep-inp2" type="email" placeholder="email@example.com"/>
+            <button id="ep-s-add" class="ep-add-btn">Add</button>
+          </div>
+          <div id="ep-s-tags" class="ep-tag-wrap"></div>
+        </div>
+        <p id="ep-s-err" class="ep-modal-err"></p>
+        <p id="ep-s-ok" class="ep-modal-ok">&#10003; Invites sent successfully!</p>
+        <div class="ep-modal-foot">
+          <button id="ep-s-cancel" class="ep-cancel">Cancel</button>
+          <button id="ep-s-send" class="ep-send">Send Invites</button>
+        </div>
+      </div>
     </div>`;
 
     function startMeeting(roomName, hostToken, shareUrl) {
@@ -266,22 +347,49 @@ class WebRTCMeetingAPI {
       catch(_) { sessionStorage.removeItem(SESSION_KEY); }
     }
 
-    // Load past meetings
+    // Load past meetings — split into instant and scheduled
     fetch(this._httpBase + '/api/v1/projects/my-meetings?embed_token=' + encodeURIComponent(this._embedToken))
       .then(r => r.json())
       .then(list => {
-        const el = document.getElementById('ep-list');
-        if (!list || !list.length) { el.innerHTML = '<p class="ep-empty">No meetings yet.</p>'; return; }
-        el.innerHTML = list.map(m => `<div class="ep-row">
-          <div><div class="ep-row-title">${m.title}</div>
-          <div class="ep-row-date">${new Date(m.created_at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div></div>
-          <button class="ep-join" data-room="${m.room_name}" data-token="${m.host_token}" data-share="${m.share_url}">Join</button>
-        </div>`).join('');
-        el.querySelectorAll('.ep-join').forEach(btn => {
+        const elI = document.getElementById('ep-list-instant');
+        const elS = document.getElementById('ep-list-sched');
+        if (!list || !list.length) {
+          elI.innerHTML = '<p class="ep-empty">No instant meetings yet.</p>';
+          elS.innerHTML = '<p class="ep-empty">No scheduled meetings yet.</p>';
+          return;
+        }
+        const instant   = list.filter(m => !m.scheduled_at);
+        const scheduled = list.filter(m =>  m.scheduled_at);
+
+        function renderRow(m, isScheduled) {
+          const dateStr = isScheduled
+            ? new Date(m.scheduled_at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+            : new Date(m.created_at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+          const calIcon = isScheduled ? '<span style="color:#34a853;margin-right:4px">&#128197;</span>' : '';
+          return `<div class="ep-row">
+            <div><div class="ep-row-title">${calIcon}${m.title}</div>
+            <div class="ep-row-date">${isScheduled ? 'Scheduled: ' : ''}${dateStr}</div></div>
+            <button class="ep-join" data-room="${m.room_name}" data-token="${m.host_token}" data-share="${m.share_url}">Join</button>
+          </div>`;
+        }
+
+        elI.innerHTML = instant.length
+          ? instant.map(m => renderRow(m, false)).join('')
+          : '<p class="ep-empty">No instant meetings yet.</p>';
+        elS.innerHTML = scheduled.length
+          ? scheduled.map(m => renderRow(m, true)).join('')
+          : '<p class="ep-empty">No scheduled meetings yet.</p>';
+
+        document.querySelectorAll('.ep-join').forEach(btn => {
           btn.addEventListener('click', function() { startMeeting(this.dataset.room, this.dataset.token, this.dataset.share); });
         });
       })
-      .catch(() => { const el = document.getElementById('ep-list'); if(el) el.innerHTML = '<p class="ep-empty">Could not load meetings.</p>'; });
+      .catch(() => {
+        const elI = document.getElementById('ep-list-instant');
+        const elS = document.getElementById('ep-list-sched');
+        if(elI) elI.innerHTML = '<p class="ep-empty">Could not load meetings.</p>';
+        if(elS) elS.innerHTML = '';
+      });
 
     // Create new meeting
     const createBtn = document.getElementById('ep-create');
@@ -300,6 +408,104 @@ class WebRTCMeetingAPI {
       .catch(e => { errEl.textContent = e.message; errEl.style.display = 'block'; createBtn.disabled = false; createBtn.textContent = 'Create & Start'; });
     };
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') createBtn.click(); });
+
+    // ── Schedule Meeting modal ──────────────────────────────────────────────
+    const schedOverlay = document.getElementById('ep-sched-overlay');
+    const schedErrEl   = document.getElementById('ep-s-err');
+    const schedOkEl    = document.getElementById('ep-s-ok');
+    const schedSend    = document.getElementById('ep-s-send');
+    const schedTitle   = document.getElementById('ep-s-title');
+    const schedDate    = document.getElementById('ep-s-date');
+    const schedTime    = document.getElementById('ep-s-time');
+    const schedTz      = document.getElementById('ep-s-tz');
+    const schedEmail   = document.getElementById('ep-s-email');
+    const schedTags    = document.getElementById('ep-s-tags');
+    let schedInvitees  = [];
+
+    // Set today as min date and default timezone
+    schedDate.min = new Date().toISOString().split('T')[0];
+    try {
+      const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (schedTz.querySelector('option[value="' + userTz + '"]')) schedTz.value = userTz;
+    } catch(_) {}
+
+    // Pre-fill title from meeting title input
+    document.getElementById('ep-sched-open').addEventListener('click', () => {
+      schedTitle.value = inp.value.trim() || '';
+      schedInvitees = [];
+      schedTags.innerHTML = '';
+      schedErrEl.style.display = 'none';
+      schedOkEl.style.display = 'none';
+      schedEmail.value = '';
+      schedSend.disabled = false;
+      schedSend.textContent = 'Send Invites';
+      schedOverlay.style.display = 'flex';
+    });
+
+    document.getElementById('ep-s-cancel').addEventListener('click', () => { schedOverlay.style.display = 'none'; });
+    schedOverlay.addEventListener('click', e => { if (e.target === schedOverlay) schedOverlay.style.display = 'none'; });
+
+    function renderTags() {
+      schedTags.innerHTML = schedInvitees.map(em =>
+        `<span class="ep-tag">${em}<button data-em="${em}" title="Remove">&times;</button></span>`
+      ).join('');
+      schedTags.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+        schedInvitees = schedInvitees.filter(x => x !== b.dataset.em);
+        renderTags();
+      }));
+    }
+
+    function addInvitee() {
+      const email = schedEmail.value.trim().toLowerCase();
+      if (!email) return;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { schedErrEl.textContent = 'Enter a valid email address'; schedErrEl.style.display = 'block'; return; }
+      if (schedInvitees.includes(email)) { schedErrEl.textContent = 'Already added'; schedErrEl.style.display = 'block'; return; }
+      schedInvitees.push(email);
+      schedEmail.value = '';
+      schedErrEl.style.display = 'none';
+      renderTags();
+    }
+
+    document.getElementById('ep-s-add').addEventListener('click', addInvitee);
+    schedEmail.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addInvitee(); } });
+
+    schedSend.addEventListener('click', () => {
+      schedErrEl.style.display = 'none';
+      schedOkEl.style.display = 'none';
+      const title = schedTitle.value.trim();
+      if (!title) { schedErrEl.textContent = 'Meeting title is required'; schedErrEl.style.display = 'block'; return; }
+      if (!schedDate.value || !schedTime.value) { schedErrEl.textContent = 'Please pick a date and time'; schedErrEl.style.display = 'block'; return; }
+      // Auto-add pending email
+      const pending = schedEmail.value.trim().toLowerCase();
+      if (pending && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pending) && !schedInvitees.includes(pending)) {
+        schedInvitees.push(pending); schedEmail.value = ''; renderTags();
+      }
+      if (schedInvitees.length === 0) { schedErrEl.textContent = 'Add at least one invitee'; schedErrEl.style.display = 'block'; return; }
+
+      schedSend.disabled = true; schedSend.textContent = 'Sending…';
+      fetch(self._httpBase + '/api/v1/projects/embed-schedule-invite', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          embed_token: self._embedToken,
+          meeting_title: title,
+          scheduled_at: schedDate.value + 'T' + schedTime.value + ':00',
+          timezone: schedTz.value,
+          invitees: schedInvitees,
+        })
+      })
+      .then(r => r.ok ? r.json() : r.json().then(e => { throw new Error(e.detail || 'Failed'); }))
+      .then(() => {
+        schedOkEl.style.display = 'block';
+        schedSend.textContent = 'Sent!';
+        setTimeout(() => { schedOverlay.style.display = 'none'; }, 2000);
+      })
+      .catch(e => {
+        schedErrEl.textContent = e.message;
+        schedErrEl.style.display = 'block';
+        schedSend.disabled = false;
+        schedSend.textContent = 'Send Invites';
+      });
+    });
 
   }
 
@@ -1548,6 +1754,80 @@ class WebRTCMeetingAPI {
       }
       .wrtc-invite-close:hover{background:rgba(255,255,255,.14)}
 
+      /* ══════════════════════════════════════════════════
+         MOBILE RESPONSIVE  (≤ 640px)
+      ══════════════════════════════════════════════════ */
+      @media(max-width:640px){
+
+        /* ── Top bar ── */
+        .wrtc-top{padding:10px 12px;}
+        .wrtc-room-name{font-size:13px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .wrtc-clock{display:none}
+        .wrtc-peer-chip{padding:3px 8px 3px 6px;font-size:12px;}
+
+        /* ── Stage ── */
+        .wrtc-stage{padding:52px 0 88px;}
+        /* Panel overlays full screen on mobile — no padding-right shift */
+        .wrtc-stage.panel-open{padding-right:0}
+
+        /* ── Side panel — full-screen overlay ── */
+        .wrtc-side-panel{width:100%;border-left:none;border-top:1px solid rgba(255,255,255,.07);}
+
+        /* ── Controls bar ── */
+        .wrtc-controls{
+          bottom:16px;
+          padding:8px 10px;
+          gap:4px;
+          max-width:calc(100vw - 16px);
+        }
+        .wrtc-btn{width:40px;height:40px;}
+        .wrtc-btn-label{display:none}
+        .wrtc-divider{margin:0 1px;}
+        /* Leave button: icon-only on mobile */
+        .wrtc-btn-leave{padding:0;width:40px;border-radius:50%;}
+        .wrtc-btn-leave .wrtc-leave-text{display:none;}
+
+        /* ── More menu — slide up from bottom ── */
+        .wrtc-more-menu{
+          position:fixed;bottom:80px;left:8px;right:8px;min-width:unset;
+          border-radius:16px;
+        }
+
+        /* ── Tile label ── */
+        .wrtc-tile-label{font-size:11px;padding:3px 8px;bottom:6px;left:6px;}
+
+        /* ── Focus mode ── */
+        .wrtc-focus-wrap{flex-direction:column;}
+        .wrtc-focus-main{flex:1;min-height:0;}
+        .wrtc-focus-tiles{
+          flex-direction:row;width:100%;height:90px;overflow-x:auto;overflow-y:hidden;
+          border-left:none;border-top:1px solid rgba(255,255,255,.07);
+        }
+        .wrtc-focus-tile-wrap{width:120px;flex-shrink:0;height:90px;}
+
+        /* ── Presentation thumb strip — horizontal at bottom ── */
+        .wrtc-thumbs{
+          flex-direction:row;width:100%;height:90px;
+          border-left:none;border-top:1px solid rgba(255,255,255,.07);
+          overflow-x:auto;overflow-y:hidden;
+        }
+        .wrtc-thumb-tile{width:120px;flex-shrink:0;height:90px;aspect-ratio:unset;}
+
+        /* ── Knock popup ── */
+        .wrtc-knock-popup{width:calc(100vw - 32px);left:16px;transform:none;}
+
+        /* ── Toast ── */
+        .wrtc-toast{max-width:calc(100vw - 32px);font-size:13px;}
+
+        /* ── People panel rows ── */
+        .wrtc-person{padding:10px 14px;}
+
+        /* ── Lobby (pre-join) ── */
+        .wrtc-lobby-card{flex-direction:column;}
+        .wrtc-lobby-left{min-height:200px;}
+        .wrtc-lobby-right{width:100%;padding:24px 20px;}
+      }
+
     </style>
 
     <div class="wrtc" id="wrtc-root">
@@ -1775,7 +2055,7 @@ class WebRTCMeetingAPI {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.28-.28.67-.36 1.02-.25 1.12.37 2.33.57 3.58.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.26.2 2.46.57 3.58.1.35.02.74-.25 1.02L6.6 10.8z" transform="rotate(135,12,12)"/>
           </svg>
-          Leave
+          <span class="wrtc-leave-text">Leave</span>
         </button>
       </div>
 
@@ -3810,6 +4090,44 @@ class WebRTCMeetingAPI {
           'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>' +
           '</div>';
         break;
+
+      case "meeting_ended_plan_limit": {
+        this._isLeaving = true;
+        sessionStorage.removeItem("wrtc_name_" + this.roomName);
+        sessionStorage.removeItem("meet_session_" + this.roomName);
+        sessionStorage.removeItem("wrtc_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_start_" + this.roomName);
+        sessionStorage.removeItem("wrtc_chat_" + this.roomName);
+        this._ws?.close();
+        const _isHostEnd = this._isHost;
+        const _dashboardUrl = this._httpBase;
+        const _planMsgHost = payload.message || "Your meeting has ended due to your plan's time limit.";
+        const _planMsgGuest = "This meeting has ended — the host's plan time limit was reached. Please ask the host to upgrade their plan.";
+        const _displayMsg = _isHostEnd ? _planMsgHost : _planMsgGuest;
+        const _upgradeBtn = _isHostEnd
+          ? '<button onclick="window.location.href=\'' + _dashboardUrl + '\'" ' +
+            'style="padding:11px 28px;background:linear-gradient(135deg,#6c63ff,#5a52d5);color:#fff;' +
+            'border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;' +
+            'box-shadow:0 4px 14px rgba(108,99,255,.4);">⚡ Upgrade Plan</button>'
+          : '';
+        this.parentNode.innerHTML =
+          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+          'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
+          '<div style="font-size:56px;">⏱️</div>' +
+          '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
+          '<div style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:12px;' +
+          'padding:16px 24px;max-width:480px;text-align:center;">' +
+          '<p style="color:#fbbf24;font-size:14px;margin:0;line-height:1.6;">' + _displayMsg + '</p>' +
+          '</div>' +
+          '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">' +
+          '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
+          'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>' +
+          _upgradeBtn +
+          '</div>' +
+          '</div>';
+        break;
+      }
 
       case "leave": {
         const leaveName = this._displayName(payload.user_id);

@@ -479,10 +479,15 @@ async def signaling_endpoint(
     # room_size, so multiple simultaneous knockers can all pass the initial check
     # unless we re-check at approval time with the correct limit).
     from app.modules.project.mau import (
-        check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS,
+        check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS, PLAN_TIME_LIMITS,
+        PUBLIC_MEETING_PARTICIPANT_LIMIT, PUBLIC_MEETING_TIME_LIMIT_MINUTES,
     )
     project_id, owner_plan, _room_found = await get_project_and_plan(meeting_id)
-    p_limit: int | None = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 5) if _room_found else None
+    _is_public_meeting = (project_id is None and _room_found)
+    if _is_public_meeting:
+        p_limit: int | None = PUBLIC_MEETING_PARTICIPANT_LIMIT
+    else:
+        p_limit: int | None = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 100) if _room_found else None
 
     # ── Step 4: MAU + concurrent participant limit (non-hosts only) ──────────
     if not is_any_host:
@@ -794,6 +799,46 @@ async def signaling_endpoint(
         if manager.get_permanent_host(room_id) is None:
             manager.set_permanent_host(room_id, user_id)
             logger.info("Host initialized the meeting  room=%s  host=%s", room_id, user_id)
+            # Start time limit timer (only on first host join, not reconnects)
+            # Public meetings use a fixed 40-minute limit; embed meetings use plan-based limit
+            _t_limit: int | None = PUBLIC_MEETING_TIME_LIMIT_MINUTES if _is_public_meeting else PLAN_TIME_LIMITS.get(owner_plan)
+            if _t_limit is not None:
+                _plan_label = owner_plan or "free"
+                _plan_display = _plan_label.capitalize()
+                _t_minutes = _t_limit
+                _is_pub_mtg = _is_public_meeting
+                async def _end_meeting_time_limit(
+                    _rid=room_id, _label=_plan_label, _display=_plan_display, _mins=_t_minutes, _pub=_is_pub_mtg
+                ):
+                    if _pub:
+                        _msg = (
+                            f"Your meeting has ended — public meetings allow a maximum of "
+                            f"{_mins} minutes. Create a project and upgrade your plan to host longer meetings."
+                        )
+                    else:
+                        _msg = (
+                            f"Your meeting has ended — the {_display} plan allows only "
+                            f"{_mins} minute{'s' if _mins != 1 else ''}. "
+                            "Please upgrade your plan to host longer meetings."
+                        )
+                    await manager.broadcast_to_room(_rid, {
+                        "type": "meeting_ended_plan_limit",
+                        "from": "server",
+                        "payload": {"plan": _label, "minutes": _mins, "message": _msg},
+                    })
+                    for _pid in manager.get_pending_ids(_rid):
+                        manager.resolve_pending(_rid, _pid, False)
+                    await _record_meeting_end(_rid)
+                    manager._time_limit_tasks.pop(_rid, None)
+                    logger.info(
+                        "Meeting ended by time limit  room=%s  plan=%s  minutes=%d",
+                        _rid, _label, _mins,
+                    )
+                manager.start_time_limit(room_id, _end_meeting_time_limit, timeout_seconds=_t_limit * 60)
+                logger.info(
+                    "Time limit timer started  room=%s  plan=%s  minutes=%d",
+                    room_id, _plan_label, _t_limit,
+                )
         else:
             logger.info("Host rejoined the meeting  room=%s  host=%s", room_id, user_id)
         # Cancel any pending grace period (host reconnected in time)
@@ -1061,6 +1106,7 @@ async def signaling_endpoint(
                     )
                     for pid in manager.get_pending_ids(room_id):
                         manager.resolve_pending(room_id, pid, False)
+                    manager.cancel_time_limit(room_id)
                     asyncio.create_task(_record_meeting_end(room_id))
                     logger.info("Meeting ended by host  room=%s  host=%s", room_id, user_id)
                     break  # host leaves after ending
@@ -1153,6 +1199,7 @@ async def signaling_endpoint(
                 )
                 for pid in manager.get_pending_ids(room_id):
                     manager.resolve_pending(room_id, pid, False)
+                manager.cancel_time_limit(room_id)
                 await _record_meeting_end(room_id)
             manager.start_host_grace(room_id, _end_meeting_after_grace, timeout=60)
             logger.info("Host absent — grace period started  room=%s", room_id)

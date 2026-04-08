@@ -41,6 +41,7 @@ class ProjectMeetingResponse(BaseModel):
     host_token: str
     share_url: str
     created_at: datetime
+    scheduled_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,6 +56,21 @@ class CreateMeetingResponse(BaseModel):
     host_token: str
     share_url: str
     title: str
+
+
+class ScheduleInviteRequest(BaseModel):
+    meeting_title: str = Field(min_length=1, max_length=255)
+    scheduled_at: str                    # "YYYY-MM-DDTHH:MM:SS" in the given timezone
+    timezone: str = "UTC"
+    invitees: list[str] = Field(default_factory=list)
+
+
+class EmbedScheduleInviteRequest(BaseModel):
+    embed_token: str
+    meeting_title: str = Field(min_length=1, max_length=255)
+    scheduled_at: str                    # "YYYY-MM-DDTHH:MM:SS" in the given timezone
+    timezone: str = "UTC"
+    invitees: list[str] = Field(default_factory=list)
 
 
 class DomainAddRequest(BaseModel):
