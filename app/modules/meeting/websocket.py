@@ -161,6 +161,21 @@ async def _record_meeting_end(room_id: str) -> None:
     except Exception as exc:
         logger.warning("Failed to record meeting end  room=%s  error=%s", room_id, exc)
 
+
+async def _deactivate_public_meeting(room_code: str) -> None:
+    """Mark a public meeting as inactive so refresh/rejoin is blocked."""
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(PublicMeeting).where(PublicMeeting.room_code == room_code)
+            )
+            pm = result.scalar_one_or_none()
+            if pm and pm.is_active:
+                pm.is_active = False
+                await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to deactivate public meeting  room=%s  error=%s", room_code, exc)
+
 # ── Accepted client message types ─────────────────────────────────────────────
 
 _P2P_TYPES = {"offer", "answer", "ice-candidate"}   # relayed peer-to-peer
@@ -591,6 +606,19 @@ async def signaling_endpoint(
                 )
             ).scalar_one_or_none()
             if pm:
+                if not pm.is_active:
+                    await websocket.accept()
+                    await websocket.send_json({
+                        "type": "meeting_ended_plan_limit",
+                        "from": "server",
+                        "payload": {
+                            "plan": "free",
+                            "minutes": 0,
+                            "message": "This meeting has ended — its time limit was reached.",
+                        },
+                    })
+                    await websocket.close(code=1000)
+                    return
                 meeting_settings = {
                     "require_approval":             pm.require_approval,
                     "allow_participants_see_others": pm.allow_participants_see_others,
@@ -829,6 +857,8 @@ async def signaling_endpoint(
                     for _pid in manager.get_pending_ids(_rid):
                         manager.resolve_pending(_rid, _pid, False)
                     await _record_meeting_end(_rid)
+                    if _pub:
+                        await _deactivate_public_meeting(_rid)
                     manager._time_limit_tasks.pop(_rid, None)
                     logger.info(
                         "Meeting ended by time limit  room=%s  plan=%s  minutes=%d",

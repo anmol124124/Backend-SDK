@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "" }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "" }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -34,8 +34,9 @@ class WebRTCMeetingAPI {
     } else {
       this._logoUrl = logoUrl || "";
     }
-    this.parentNode  = parentNode;
-    this._onLeave    = onLeave;
+    this.parentNode      = parentNode;
+    this._onLeave        = onLeave;
+    this._upgradePlanUrl = upgradePlanUrl || "";
 
     // WebRTC state
     this._ws                = null;
@@ -3881,11 +3882,29 @@ class WebRTCMeetingAPI {
         1000,  // Normal closure (user clicked leave)
         4001,  // Invalid / expired token
         4003,  // Forbidden
+        4403,  // Meeting has ended (plan/time limit — inactive)
         4429,  // MAU limit reached
         4430,  // Room full
       ];
       if (this._isLeaving || _noRetry.includes(e.code)) {
         console.log(`[WRTC] WS closed permanently — no reconnect  code=${e.code}  isLeaving=${this._isLeaving}`);
+        if (e.code === 4403) {
+          sessionStorage.removeItem("wrtc_name_" + this.roomName);
+          sessionStorage.removeItem("meet_session_" + this.roomName);
+          sessionStorage.removeItem("wrtc_mic_" + this.roomName);
+          sessionStorage.removeItem("wrtc_cam_" + this.roomName);
+          sessionStorage.removeItem("wrtc_start_" + this.roomName);
+          sessionStorage.removeItem("wrtc_chat_" + this.roomName);
+          this.parentNode.innerHTML =
+            '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+            'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
+            '<div style="font-size:56px;">⏱️</div>' +
+            '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
+            '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;text-align:center;">This meeting has ended and cannot be rejoined.</p>' +
+            '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
+            'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>' +
+            '</div>';
+        }
         return;
       }
 
@@ -4101,30 +4120,38 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_chat_" + this.roomName);
         this._ws?.close();
         const _isHostEnd = this._isHost;
-        const _dashboardUrl = this._httpBase;
-        const _planMsgHost = payload.message || "Your meeting has ended due to your plan's time limit.";
-        const _planMsgGuest = "This meeting has ended — the host's plan time limit was reached. Please ask the host to upgrade their plan.";
-        const _displayMsg = _isHostEnd ? _planMsgHost : _planMsgGuest;
+        const _plan = payload.plan || "free";
+        const _upgradeBase = this._upgradePlanUrl || (this._httpBase + '/?upgrade=1');
+        const _upgradeUrl = _upgradeBase + ((_upgradeBase.includes('?') ? '&' : '?') + 'plan=' + encodeURIComponent(_plan));
+        const _hostMsg = payload.message || "Your meeting has ended — the time limit for your plan was reached.";
         const _upgradeBtn = _isHostEnd
-          ? '<button onclick="window.location.href=\'' + _dashboardUrl + '\'" ' +
+          ? '<button onclick="window.location.href=\'' + _upgradeUrl + '\'" ' +
             'style="padding:11px 28px;background:linear-gradient(135deg,#6c63ff,#5a52d5);color:#fff;' +
             'border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;' +
             'box-shadow:0 4px 14px rgba(108,99,255,.4);">⚡ Upgrade Plan</button>'
           : '';
-        this.parentNode.innerHTML =
-          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-          'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
-          '<div style="font-size:56px;">⏱️</div>' +
-          '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
+        const _hostContent =
           '<div style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:12px;' +
           'padding:16px 24px;max-width:480px;text-align:center;">' +
-          '<p style="color:#fbbf24;font-size:14px;margin:0;line-height:1.6;">' + _displayMsg + '</p>' +
+          '<p style="color:#fbbf24;font-size:14px;margin:0;line-height:1.6;">' + _hostMsg + '</p>' +
           '</div>' +
           '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">' +
           '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
           'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>' +
           _upgradeBtn +
-          '</div>' +
+          '</div>';
+        const _guestContent =
+          '<p style="color:rgba(255,255,255,.55);font-size:15px;margin:0;text-align:center;max-width:380px;line-height:1.6;">' +
+          'This meeting has ended. Please ask the host to upgrade their plan to continue.' +
+          '</p>' +
+          '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
+          'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>';
+        this.parentNode.innerHTML =
+          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
+          'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
+          '<div style="font-size:56px;">⏱️</div>' +
+          '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
+          (_isHostEnd ? _hostContent : _guestContent) +
           '</div>';
         break;
       }
