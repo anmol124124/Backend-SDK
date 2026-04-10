@@ -181,6 +181,7 @@ class ProjectService:
     @staticmethod
     def generate_embed_html(project: Project, backend_url: str) -> str:
         backend_url = backend_url.rstrip("/")
+        dashboard_url = settings.DASHBOARD_URL.rstrip("/")
         return f"""<!DOCTYPE html>
 <html>
   <head>
@@ -198,7 +199,8 @@ class ProjectService:
           new WebRTCMeetingAPI({{
             embedToken: "{project.embed_token}",
             parentNode: document.getElementById('meeting-container'),
-            onLeave: launchApp,{f'{chr(10)}            logoUrl: "{project.logo_url}",' if project.logo_url else ''}
+            onLeave: launchApp,
+            upgradePlanUrl: "{dashboard_url}/?myplan=1",{f'{chr(10)}            logoUrl: "{project.logo_url}",' if project.logo_url else ''}
           }});
         }}
         launchApp();
