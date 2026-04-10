@@ -50,15 +50,15 @@ PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
 
 # Max meeting duration in minutes (None = unlimited)
 PLAN_TIME_LIMITS: dict[str | None, int | None] = {
-    None:      1,      # free  → 1 minute (testing)
-    "basic":   1,      # basic → 1 minute
+    None:      40,     # free  → 40 minutes
+    "basic":   40,     # basic → 40 minutes
     "pro":     None,   # unlimited
     "premium": None,   # unlimited
 }
 
 # Fixed limits for public-meet meetings (apply regardless of host plan)
 PUBLIC_MEETING_PARTICIPANT_LIMIT: int = 100
-PUBLIC_MEETING_TIME_LIMIT_MINUTES: int = 1  # testing
+PUBLIC_MEETING_TIME_LIMIT_MINUTES: int = 40
 
 
 def _current_month() -> str:
