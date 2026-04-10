@@ -17,7 +17,10 @@ class Project(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     room_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     embed_token: Mapped[str] = mapped_column(Text, nullable=False)
-    logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, default=None)
+    logo_url:        Mapped[str | None] = mapped_column(String(1000), nullable=True, default=None)
+    primary_color:   Mapped[str | None] = mapped_column(String(20),  nullable=True, default=None)
+    button_label:    Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
+    welcome_message: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

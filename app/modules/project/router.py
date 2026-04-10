@@ -14,6 +14,8 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.modules.auth.models import User
 from app.modules.project.schemas import (
+    BrandingRequest,
+    BrandingResponse,
     CreateMeetingRequest,
     CreateMeetingResponse,
     DomainAddRequest,
@@ -179,11 +181,19 @@ async def sdk_join(
     if pm:
         proj_result = await db.execute(select(Project).where(Project.id == pm.project_id))
         proj = proj_result.scalar_one_or_none()
+        from app.core.config import settings as _settings
+        logo_url = (
+            f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{proj.logo_url}"
+            if proj and proj.logo_url else None
+        )
         return SdkJoinResponse(
             guest_token=_make_guest_token(pm.project_id),
             room_name=pm.room_name,
             name=pm.title,
-            logo_url=proj.logo_url if proj else None,
+            logo_url=logo_url,
+            primary_color=proj.primary_color if proj else None,
+            button_label=proj.button_label if proj else None,
+            welcome_message=proj.welcome_message if proj else None,
         )
 
     # 2. Check public_meetings (public-meet dashboard meetings)
@@ -209,12 +219,60 @@ async def sdk_join(
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Meeting not found")
+    from app.core.config import settings as _settings
+    logo_url = (
+        f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{project.logo_url}"
+        if project.logo_url else None
+    )
     return SdkJoinResponse(
         guest_token=_make_guest_token(project.id),
         room_name=project.room_name,
         name=project.name,
-        logo_url=project.logo_url,
+        logo_url=logo_url,
+        primary_color=project.primary_color,
+        button_label=project.button_label,
+        welcome_message=project.welcome_message,
     )
+
+
+# ── Public branding (no auth — used by embed app.js) ─────────────────────────
+
+@router.get("/public-branding")
+async def public_branding(
+    embed_token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return branding config for an embed token — no authentication required."""
+    from jose import JWTError, jwt as jose_jwt
+    from app.core.config import settings as _settings
+    try:
+        payload = jose_jwt.decode(
+            embed_token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM]
+        )
+    except JWTError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Invalid embed token")
+    raw_project_id = payload.get("project_id")
+    if not raw_project_id:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="No project in token")
+    import uuid as _uuid
+    project_id = _uuid.UUID(raw_project_id)
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Project not found")
+    logo_url = (
+        f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{project.logo_url}"
+        if project.logo_url else None
+    )
+    return {
+        "primary_color":   project.primary_color,
+        "button_label":    project.button_label,
+        "welcome_message": project.welcome_message,
+        "logo_url":        logo_url,
+    }
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -381,6 +439,54 @@ async def meeting_detail(
             for p in participants
         ],
     }
+
+
+# ── Branding endpoints ────────────────────────────────────────────────────────
+
+@router.get("/{project_id}/branding", response_model=BrandingResponse)
+async def get_branding(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BrandingResponse:
+    project = await ProjectService.get_project(db, project_id, user.id)
+    from app.core.config import settings as _settings
+    logo_url = (
+        f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{project.logo_url}"
+        if project.logo_url else None
+    )
+    return BrandingResponse(
+        primary_color=project.primary_color,
+        button_label=project.button_label,
+        welcome_message=project.welcome_message,
+        logo_url=logo_url,
+    )
+
+
+@router.put("/{project_id}/branding", response_model=BrandingResponse)
+async def save_branding(
+    project_id: UUID,
+    payload: BrandingRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BrandingResponse:
+    project = await ProjectService.get_project(db, project_id, user.id)
+    project.primary_color   = payload.primary_color
+    project.button_label    = payload.button_label
+    project.welcome_message = payload.welcome_message
+    await db.commit()
+    await db.refresh(project)
+    from app.core.config import settings as _settings
+    logo_url = (
+        f"{_settings.BACKEND_PUBLIC_URL.rstrip('/')}{project.logo_url}"
+        if project.logo_url else None
+    )
+    return BrandingResponse(
+        primary_color=project.primary_color,
+        button_label=project.button_label,
+        welcome_message=project.welcome_message,
+        logo_url=logo_url,
+    )
 
 
 # ── Domain allowlist endpoints ────────────────────────────────────────────────

@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "" }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "", branding = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -28,6 +28,7 @@ class WebRTCMeetingAPI {
     this._guestToken = guestToken;
     this._shareUrl   = shareUrl;
     this._embedToken = embedToken;
+    this._branding   = branding || null;
     // Resolve relative logo paths against the backend origin (from script tag)
     if (logoUrl && logoUrl.startsWith('/')) {
       this._logoUrl = this._httpBase + logoUrl;
@@ -322,6 +323,9 @@ class WebRTCMeetingAPI {
         </div>
       </div>
     </div>`;
+
+    // Apply project branding (color, logo) to prescreen UI
+    this._applyBrandingToPrescreen();
 
     function startMeeting(roomName, hostToken, shareUrl) {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({roomName, hostToken, shareUrl}));
@@ -802,6 +806,13 @@ class WebRTCMeetingAPI {
 
     document.getElementById("wrtc-lobby-room-name").textContent = this.roomName;
 
+    // Apply branding: use inline data if available (guest flow), else fetch via embed token
+    if (this._branding && (this._branding.primary_color || this._branding.button_label || this._branding.welcome_message || this._branding.logo_url)) {
+      this._applyBrandingData(this._branding);
+    } else {
+      this._applyBranding();
+    }
+
     // Enable Join only when name is non-empty AND camera preview is ready
     const nameInput = document.getElementById("wrtc-name-input");
     const joinBtn   = document.getElementById("wrtc-join-btn");
@@ -925,6 +936,125 @@ class WebRTCMeetingAPI {
 
   _hidePermissionHint() {
     document.getElementById("wrtc-perm-hint")?.remove();
+  }
+
+  async _applyBrandingToPrescreen() {
+    const token = this._embedToken;
+    if (!token) return;
+    try {
+      const res = await fetch(
+        this._httpBase + '/api/v1/projects/public-branding?embed_token=' + encodeURIComponent(token)
+      );
+      if (!res.ok) return;
+      const b = await res.json();
+
+      // Inject color overrides for all prescreen buttons
+      if (b.primary_color) {
+        const c = b.primary_color;
+        const s = document.createElement('style');
+        s.textContent =
+          `.ep-btn{background:${c}!important;box-shadow:0 4px 20px ${c}44!important}` +
+          `.ep-join{background:${c}!important}` +
+          `.ep-send{background:${c}!important;box-shadow:0 4px 16px ${c}55!important}` +
+          `.ep-input:focus{border-color:${c}!important}` +
+          `.ep-inp2:focus{border-color:${c}!important}` +
+          `.ep-spin{border-top-color:${c}!important}`;
+        document.head.appendChild(s);
+      }
+
+      // Show logo above the title
+      if (b.logo_url) {
+        const hdr = document.querySelector('.ep-hdr');
+        if (hdr) {
+          const img = document.createElement('img');
+          img.src = b.logo_url;
+          img.alt = 'logo';
+          img.style.cssText = 'max-height:40px;max-width:160px;object-fit:contain;border-radius:4px;margin-bottom:14px;display:block;margin-left:auto;margin-right:auto';
+          hdr.insertBefore(img, hdr.firstChild);
+        }
+      }
+    } catch(_) {}
+  }
+
+  _applyBrandingData(b) {
+    if (!b) return;
+    if (b.primary_color) {
+      const btn = document.getElementById('wrtc-join-btn');
+      if (btn) {
+        btn.style.background = b.primary_color;
+        btn.style.boxShadow  = `0 4px 20px ${b.primary_color}66`;
+      }
+      const s = document.createElement('style');
+      s.textContent = `.wrtc-join-btn{background:${b.primary_color}!important;box-shadow:0 4px 20px ${b.primary_color}66!important}` +
+                      `.wrtc-join-btn:hover{background:${b.primary_color}dd!important;box-shadow:0 6px 24px ${b.primary_color}88!important}` +
+                      `.wrtc-join-btn:disabled{background:#2a2d38!important;box-shadow:none!important}`;
+      document.head.appendChild(s);
+    }
+    if (b.button_label) {
+      const btn = document.getElementById('wrtc-join-btn');
+      if (btn) btn.textContent = b.button_label;
+    }
+    if (b.welcome_message) {
+      const title = document.querySelector('.wrtc-lobby-title');
+      if (title) title.textContent = b.welcome_message;
+    }
+    if (b.logo_url) {
+      const brand = document.querySelector('.wrtc-lobby-brand');
+      if (brand) {
+        brand.innerHTML = `<img src="${b.logo_url}" alt="logo" style="max-height:28px;max-width:120px;object-fit:contain;border-radius:3px">`;
+      }
+    }
+  }
+
+  async _applyBranding() {
+    // Fetch project branding using the embed token and apply to lobby DOM.
+    // Works for both embedToken-flow and direct room joins (guestToken has no project).
+    const token = this._embedToken;
+    if (!token) return;
+    try {
+      const res = await fetch(
+        this._httpBase + '/api/v1/projects/public-branding?embed_token=' + encodeURIComponent(token)
+      );
+      if (!res.ok) return;
+      const b = await res.json();
+
+      // Primary color — override button background + shadow
+      if (b.primary_color) {
+        const btn = document.getElementById('wrtc-join-btn');
+        if (btn) {
+          btn.style.background  = b.primary_color;
+          btn.style.boxShadow   = `0 4px 20px ${b.primary_color}66`;
+        }
+        // Also inject a style override for hover/disabled states
+        const s = document.createElement('style');
+        s.textContent = `.wrtc-join-btn{background:${b.primary_color}!important;box-shadow:0 4px 20px ${b.primary_color}66!important}` +
+                        `.wrtc-join-btn:hover{background:${b.primary_color}dd!important;box-shadow:0 6px 24px ${b.primary_color}88!important}` +
+                        `.wrtc-join-btn:disabled{background:#2a2d38!important;box-shadow:none!important}`;
+        document.head.appendChild(s);
+      }
+
+      // Button label
+      if (b.button_label) {
+        const btn = document.getElementById('wrtc-join-btn');
+        if (btn) btn.textContent = b.button_label;
+      }
+
+      // Welcome message — replace "Ready to join?" title
+      if (b.welcome_message) {
+        const title = document.querySelector('.wrtc-lobby-title');
+        if (title) title.textContent = b.welcome_message;
+      }
+
+      // Logo — replace brand section
+      if (b.logo_url) {
+        const brand = document.querySelector('.wrtc-lobby-brand');
+        if (brand) {
+          brand.innerHTML = `<img src="${b.logo_url}" alt="logo" style="max-height:28px;max-width:120px;object-fit:contain;border-radius:3px">`;
+        }
+      }
+    } catch (_) {
+      // Branding fetch failed silently — use defaults
+    }
   }
 
   async _initPreview() {

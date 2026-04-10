@@ -31,6 +31,9 @@ class SdkJoinResponse(BaseModel):
     room_name: str
     name: str
     logo_url: str | None = None
+    primary_color: str | None = None
+    button_label: str | None = None
+    welcome_message: str | None = None
 
 
 class ProjectMeetingResponse(BaseModel):
@@ -71,6 +74,21 @@ class EmbedScheduleInviteRequest(BaseModel):
     scheduled_at: str                    # "YYYY-MM-DDTHH:MM:SS" in the given timezone
     timezone: str = "UTC"
     invitees: list[str] = Field(default_factory=list)
+
+
+class BrandingRequest(BaseModel):
+    primary_color:   str | None = Field(None, max_length=20)
+    button_label:    str | None = Field(None, max_length=100)
+    welcome_message: str | None = Field(None, max_length=500)
+
+
+class BrandingResponse(BaseModel):
+    primary_color:   str | None = None
+    button_label:    str | None = None
+    welcome_message: str | None = None
+    logo_url:        str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DomainAddRequest(BaseModel):
