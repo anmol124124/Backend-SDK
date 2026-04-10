@@ -265,14 +265,25 @@ async def project_analytics(
     )
     meetings = result.scalars().all()
 
-    # Fetch participant counts for all meetings in one query
+    # Fetch participant counts and first-join times for all meetings in one query
     room_names = [m.room_name for m in meetings]
     counts_result = await db.execute(
-        select(ProjectMeetingParticipant.room_name, func.count().label("cnt"))
+        select(
+            ProjectMeetingParticipant.room_name,
+            func.count().label("cnt"),
+            func.min(ProjectMeetingParticipant.joined_at).label("first_join"),
+        )
         .where(ProjectMeetingParticipant.room_name.in_(room_names))
         .group_by(ProjectMeetingParticipant.room_name)
     )
-    participant_counts = {row.room_name: row.cnt for row in counts_result}
+    participant_info = {row.room_name: row for row in counts_result}
+
+    def _duration(m):
+        if not m.ended_at:
+            return None
+        info = participant_info.get(m.room_name)
+        start = info.first_join if info else m.created_at
+        return max(0, int((m.ended_at - start).total_seconds()))
 
     return {
         "total": len(meetings),
@@ -283,8 +294,12 @@ async def project_analytics(
                 "room_name": m.room_name,
                 "created_at": m.created_at.isoformat(),
                 "ended_at": m.ended_at.isoformat() if m.ended_at else None,
-                "duration_seconds": int((m.ended_at - m.created_at).total_seconds()) if m.ended_at else None,
-                "participant_count": participant_counts.get(m.room_name, 0),
+                "scheduled_at": m.scheduled_at.isoformat() if m.scheduled_at else None,
+                "started_at": participant_info[m.room_name].first_join.isoformat()
+                              if m.room_name in participant_info else None,
+                "duration_seconds": _duration(m),
+                "participant_count": participant_info[m.room_name].cnt
+                                     if m.room_name in participant_info else 0,
             }
             for m in meetings
         ],
@@ -341,16 +356,18 @@ async def meeting_detail(
     )
     participants = parts_result.scalars().all()
 
-    # Duration
+    # Duration: from first participant join to ended_at (not created_at)
+    first_join = participants[0].joined_at if participants else None
     duration_seconds = None
-    if meeting.ended_at and meeting.created_at:
-        duration_seconds = int((meeting.ended_at - meeting.created_at).total_seconds())
+    if meeting.ended_at and first_join:
+        duration_seconds = max(0, int((meeting.ended_at - first_join).total_seconds()))
 
     return {
         "id": str(meeting.id),
         "title": meeting.title,
         "room_name": meeting.room_name,
         "created_at": meeting.created_at.isoformat(),
+        "started_at": first_join.isoformat() if first_join else None,
         "ended_at": meeting.ended_at.isoformat() if meeting.ended_at else None,
         "duration_seconds": duration_seconds,
         "admin": {"email": owner.email if owner else "Unknown"},

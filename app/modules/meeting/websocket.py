@@ -113,14 +113,43 @@ async def _is_project_meeting(room_id: str) -> bool:
 
 
 async def _record_participant_join(room_id: str, user_id: str, display_name: str, role: str) -> None:
+    from datetime import datetime, timezone, timedelta
     try:
         async with AsyncSessionLocal() as db:
+            now = datetime.now(timezone.utc)
+
+            # Guard: if already has an open session (left_at is None), skip duplicate
+            open_result = await db.execute(
+                select(ProjectMeetingParticipant).where(
+                    ProjectMeetingParticipant.room_name == room_id,
+                    ProjectMeetingParticipant.user_id == user_id,
+                    ProjectMeetingParticipant.left_at.is_(None),
+                )
+            )
+            if open_result.scalars().first():
+                return
+
+            # Reconnect detection: if this user left very recently (within 30s),
+            # reopen the existing record instead of creating a duplicate row.
+            recent_result = await db.execute(
+                select(ProjectMeetingParticipant).where(
+                    ProjectMeetingParticipant.room_name == room_id,
+                    ProjectMeetingParticipant.user_id == user_id,
+                    ProjectMeetingParticipant.left_at >= now - timedelta(seconds=30),
+                ).order_by(ProjectMeetingParticipant.joined_at.desc())
+            )
+            reconnect = recent_result.scalars().first()
+            if reconnect:
+                reconnect.left_at = None
+                await db.commit()
+                return
+
             participant = ProjectMeetingParticipant(
                 room_name=room_id,
                 user_id=user_id,
                 display_name=display_name,
                 role=role,
-                joined_at=__import__('datetime').datetime.now(__import__('datetime').timezone.utc),
+                joined_at=now,
             )
             db.add(participant)
             await db.commit()
@@ -1193,16 +1222,19 @@ async def signaling_endpoint(
 
     finally:
         # ── Step 9: cleanup ───────────────────────────────────────────────────
-        # Check host status before disconnecting
+        # Capture host flags BEFORE disconnect() — it clears _permanent_hosts and
+        # cancels grace tasks when the room empties, so checking after is too late.
         was_host = manager.is_host(room_id, user_id)
+        was_permanent_host = manager.is_permanent_host(room_id, user_id)
 
         if _is_pm:
             asyncio.create_task(_record_participant_leave(room_id, base_user_id))
 
         manager.disconnect(room_id, user_id)
 
-        # If the room is now empty, the meeting is effectively over — record end time.
-        if _is_pm and manager.room_size(room_id) == 0:
+        # If the room is now empty AND the host didn't just leave, end the meeting.
+        # When the host leaves, the grace period below handles ending (gives time to reconnect).
+        if _is_pm and manager.room_size(room_id) == 0 and not was_host:
             asyncio.create_task(_record_meeting_end(room_id))
 
         # Remove peer from mediasoup (closes transports, producers, consumers)
@@ -1219,7 +1251,8 @@ async def signaling_endpoint(
 
         # If the permanent host left, start a 60-second grace period.
         # If they reconnect in time, cancel it. Otherwise, end the meeting.
-        if was_host and manager.is_permanent_host(room_id, user_id) and manager.room_size(room_id) > 0:
+        # This also covers the case where the host was the only participant (room_size == 0).
+        if was_host and was_permanent_host:
             async def _end_meeting_after_grace():
                 logger.info("Grace period expired  room=%s  host=%s", room_id, user_id)
                 await manager.broadcast_to_room(

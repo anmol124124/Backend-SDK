@@ -51,7 +51,7 @@ PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
 # Max meeting duration in minutes (None = unlimited)
 PLAN_TIME_LIMITS: dict[str | None, int | None] = {
     None:      40,     # free  → 40 minutes
-    "basic":   40,     # basic → 40 minutes
+    "basic":   960,     # basic → 40 minutes
     "pro":     None,   # unlimited
     "premium": None,   # unlimited
 }
