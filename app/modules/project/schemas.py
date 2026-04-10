@@ -34,6 +34,7 @@ class SdkJoinResponse(BaseModel):
     primary_color: str | None = None
     button_label: str | None = None
     welcome_message: str | None = None
+    theme: str | None = None
 
 
 class ProjectMeetingResponse(BaseModel):
@@ -80,6 +81,7 @@ class BrandingRequest(BaseModel):
     primary_color:   str | None = Field(None, max_length=20)
     button_label:    str | None = Field(None, max_length=100)
     welcome_message: str | None = Field(None, max_length=500)
+    theme:           str | None = Field(None, pattern=r'^(light|dark)$')
 
 
 class BrandingResponse(BaseModel):
@@ -87,6 +89,7 @@ class BrandingResponse(BaseModel):
     button_label:    str | None = None
     welcome_message: str | None = None
     logo_url:        str | None = None
+    theme:           str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

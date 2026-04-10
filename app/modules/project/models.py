@@ -21,6 +21,7 @@ class Project(Base):
     primary_color:   Mapped[str | None] = mapped_column(String(20),  nullable=True, default=None)
     button_label:    Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     welcome_message: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    theme:           Mapped[str | None] = mapped_column(String(10),  nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

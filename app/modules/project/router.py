@@ -194,6 +194,7 @@ async def sdk_join(
             primary_color=proj.primary_color if proj else None,
             button_label=proj.button_label if proj else None,
             welcome_message=proj.welcome_message if proj else None,
+            theme=proj.theme if proj else None,
         )
 
     # 2. Check public_meetings (public-meet dashboard meetings)
@@ -232,6 +233,7 @@ async def sdk_join(
         primary_color=project.primary_color,
         button_label=project.button_label,
         welcome_message=project.welcome_message,
+        theme=project.theme,
     )
 
 
@@ -272,6 +274,7 @@ async def public_branding(
         "button_label":    project.button_label,
         "welcome_message": project.welcome_message,
         "logo_url":        logo_url,
+        "theme":           project.theme,
     }
 
 
@@ -460,6 +463,7 @@ async def get_branding(
         button_label=project.button_label,
         welcome_message=project.welcome_message,
         logo_url=logo_url,
+        theme=project.theme,
     )
 
 
@@ -474,6 +478,7 @@ async def save_branding(
     project.primary_color   = payload.primary_color
     project.button_label    = payload.button_label
     project.welcome_message = payload.welcome_message
+    project.theme           = payload.theme
     await db.commit()
     await db.refresh(project)
     from app.core.config import settings as _settings
@@ -486,6 +491,7 @@ async def save_branding(
         button_label=project.button_label,
         welcome_message=project.welcome_message,
         logo_url=logo_url,
+        theme=project.theme,
     )
 
 

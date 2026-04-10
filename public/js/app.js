@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "", branding = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "", branding = null, theme = null }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -29,6 +29,7 @@ class WebRTCMeetingAPI {
     this._shareUrl   = shareUrl;
     this._embedToken = embedToken;
     this._branding   = branding || null;
+    this._theme      = (branding && branding.theme) || theme || null;
     // Resolve relative logo paths against the backend origin (from script tag)
     if (logoUrl && logoUrl.startsWith('/')) {
       this._logoUrl = this._httpBase + logoUrl;
@@ -806,6 +807,8 @@ class WebRTCMeetingAPI {
 
     document.getElementById("wrtc-lobby-room-name").textContent = this.roomName;
 
+    // Apply theme immediately if known
+    if (this._theme) this._applyTheme(this._theme);
     // Apply branding: use inline data if available (guest flow), else fetch via embed token
     if (this._branding && (this._branding.primary_color || this._branding.button_label || this._branding.welcome_message || this._branding.logo_url)) {
       this._applyBrandingData(this._branding);
@@ -938,6 +941,120 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-perm-hint")?.remove();
   }
 
+  _applyTheme(theme) {
+    if (!theme) return;
+    const p = this.parentNode;
+    if (!p) return;
+    // Mark the container so CSS rules can scope under it
+    p.setAttribute('data-wrtc-theme', theme);
+    const id = 'wrtc-theme-style';
+    if (document.getElementById(id)) return; // already injected
+    const s = document.createElement('style');
+    s.id = id;
+    if (theme === 'light') {
+      s.textContent = `
+        /* ── Light theme — video tiles stay dark, chrome goes light ── */
+
+        /* Container background — neutral gray so dark tiles pop */
+        [data-wrtc-theme="light"]{background:#e8eaed!important}
+        [data-wrtc-theme="light"] .wrtc{background:#e8eaed!important;color:#202124!important}
+
+        /* Top bar — white pill on light bg */
+        [data-wrtc-theme="light"] .wrtc-top{background:linear-gradient(to bottom,rgba(232,234,237,.95) 0%,transparent 100%)!important}
+        [data-wrtc-theme="light"] .wrtc-room-name{color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-clock{color:rgba(0,0,0,.55)!important}
+        [data-wrtc-theme="light"] .wrtc-peer-chip{background:rgba(0,0,0,.1)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-peer-chip:hover{background:rgba(0,0,0,.16)!important}
+
+        /* Video tiles — keep dark so video is visible */
+        [data-wrtc-theme="light"] .wrtc-tile{background:#2d2f36!important}
+        [data-wrtc-theme="light"] .wrtc-tile video{background:#1a1c22!important}
+
+        /* Control bar — white frosted */
+        [data-wrtc-theme="light"] .wrtc-controls{background:rgba(255,255,255,.92)!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 4px 24px rgba(0,0,0,.12),0 1px 4px rgba(0,0,0,.06)!important}
+        [data-wrtc-theme="light"] .wrtc-btn{background:rgba(0,0,0,.07)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-btn:hover{background:rgba(0,0,0,.13)!important}
+        [data-wrtc-theme="light"] .wrtc-btn-label{color:rgba(0,0,0,.5)!important}
+        [data-wrtc-theme="light"] .wrtc-btn-badge{border-color:rgba(255,255,255,.92)!important}
+        [data-wrtc-theme="light"] .wrtc-divider{background:rgba(0,0,0,.12)!important}
+
+        /* 3-dot menu — white */
+        [data-wrtc-theme="light"] .wrtc-more-menu{background:#fff!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 8px 32px rgba(0,0,0,.14)!important}
+        [data-wrtc-theme="light"] .wrtc-more-item{color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-more-item:hover{background:rgba(0,0,0,.06)!important}
+        [data-wrtc-theme="light"] .wrtc-more-divider{background:rgba(0,0,0,.08)!important}
+
+        /* Side panel — white */
+        [data-wrtc-theme="light"] .wrtc-side-panel{background:#ffffff!important;border-left-color:rgba(0,0,0,.1)!important}
+        [data-wrtc-theme="light"] .wrtc-panel-tabs{border-bottom-color:rgba(0,0,0,.08)!important}
+        [data-wrtc-theme="light"] .wrtc-panel-tab{color:rgba(0,0,0,.45)!important}
+        [data-wrtc-theme="light"] .wrtc-panel-tab:hover,[data-wrtc-theme="light"] .wrtc-panel-tab.active{color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-panel-close{color:#5f6368!important}
+        [data-wrtc-theme="light"] .wrtc-panel-close:hover{background:rgba(0,0,0,.06)!important;color:#202124!important}
+        /* People list */
+        [data-wrtc-theme="light"] .wrtc-person:hover{background:rgba(0,0,0,.04)!important}
+        [data-wrtc-theme="light"] .wrtc-person-name{color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-you-tag{color:rgba(0,0,0,.4)!important}
+        [data-wrtc-theme="light"] .wrtc-host-tag{color:#1a73e8!important}
+        [data-wrtc-theme="light"] .wrtc-person-icon{color:rgba(0,0,0,.3)!important}
+        /* Chat */
+        [data-wrtc-theme="light"] .wrtc-chat-empty{color:rgba(0,0,0,.4)!important}
+        [data-wrtc-theme="light"] .wrtc-msg-name{color:#1a73e8!important}
+        [data-wrtc-theme="light"] .wrtc-msg-name.mine{color:#0d7a3e!important}
+        [data-wrtc-theme="light"] .wrtc-msg-time{color:rgba(0,0,0,.35)!important}
+        [data-wrtc-theme="light"] .wrtc-msg-text{color:#202124!important;background:rgba(0,0,0,.06)!important}
+        [data-wrtc-theme="light"] .wrtc-msg.mine .wrtc-msg-text{background:rgba(26,115,232,.12)!important}
+        [data-wrtc-theme="light"] .wrtc-msg-system{color:rgba(0,0,0,.35)!important}
+        [data-wrtc-theme="light"] .wrtc-msg-more{color:#1a73e8!important}
+        [data-wrtc-theme="light"] .wrtc-chat-footer{border-top-color:rgba(0,0,0,.08)!important}
+        [data-wrtc-theme="light"] .wrtc-chat-input{background:rgba(0,0,0,.05)!important;border-color:rgba(0,0,0,.12)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-chat-input::placeholder{color:rgba(0,0,0,.35)!important}
+        [data-wrtc-theme="light"] .wrtc-people-list::-webkit-scrollbar-thumb,[data-wrtc-theme="light"] .wrtc-chat-msgs::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15)!important}
+        /* Waiting overlay */
+        [data-wrtc-theme="light"] .wrtc-waiting{color:rgba(0,0,0,.65)!important}
+        [data-wrtc-theme="light"] .wrtc-waiting-ring{border-color:rgba(0,0,0,.12)!important;border-top-color:#1a73e8!important}
+        [data-wrtc-theme="light"] .wrtc-knock-waiting{color:rgba(0,0,0,.45)!important}
+
+        /* Lobby — light card on neutral bg */
+        [data-wrtc-theme="light"] .wrtc-lobby{background:#e8eaed!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-card{background:#ffffff!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 24px 64px rgba(0,0,0,.12)!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-right{background:#fafafa!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-title{color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-room{color:#5f6368!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-input{background:rgba(0,0,0,.05)!important;border-color:rgba(0,0,0,.15)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-input::placeholder{color:rgba(0,0,0,.35)!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-brand svg path,[data-wrtc-theme="light"] .wrtc-lobby-brand svg rect{stroke:#5f6368!important}
+
+        /* Prescreen — light */
+        [data-wrtc-theme="light"] .ep{background:#e8eaed!important}
+        [data-wrtc-theme="light"] .ep-hdr h2{color:#202124!important}
+        [data-wrtc-theme="light"] .ep-hdr p{color:#5f6368!important}
+        [data-wrtc-theme="light"] .ep-card{background:#ffffff!important;border-color:rgba(0,0,0,.08)!important;box-shadow:0 4px 16px rgba(0,0,0,.08)!important}
+        [data-wrtc-theme="light"] .ep-card h3{color:#5f6368!important}
+        [data-wrtc-theme="light"] .ep-input{background:rgba(0,0,0,.05)!important;border-color:rgba(0,0,0,.12)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .ep-input::placeholder{color:rgba(0,0,0,.35)!important}
+        [data-wrtc-theme="light"] .ep-row{border-bottom-color:rgba(0,0,0,.06)!important}
+        [data-wrtc-theme="light"] .ep-row-title{color:#202124!important}
+        [data-wrtc-theme="light"] .ep-row-date{color:#5f6368!important}
+        [data-wrtc-theme="light"] .ep-empty{color:#5f6368!important}
+        [data-wrtc-theme="light"] .ep-sched-btn{color:#5f6368!important;border-color:rgba(0,0,0,.15)!important}
+        [data-wrtc-theme="light"] .ep-sched-btn:hover{color:#202124!important}
+        [data-wrtc-theme="light"] .ep-modal{background:#fff!important;border-color:rgba(0,0,0,.1)!important}
+        [data-wrtc-theme="light"] .ep-modal h3,[data-wrtc-theme="light"] .ep-modal-sub{color:#202124!important}
+        [data-wrtc-theme="light"] .ep-label{color:#5f6368!important}
+        [data-wrtc-theme="light"] .ep-inp2{background:rgba(0,0,0,.05)!important;border-color:rgba(0,0,0,.12)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .ep-cancel{color:#5f6368!important;border-color:rgba(0,0,0,.15)!important}
+        [data-wrtc-theme="light"] .ep-tag{background:rgba(0,0,0,.06)!important;border-color:rgba(0,0,0,.1)!important;color:#202124!important}
+      `;
+    } else if (theme === 'dark') {
+      // Dark is the default — only need to force it if the OS is in light mode
+      s.textContent = `
+        [data-wrtc-theme="dark"]{background:linear-gradient(135deg,#13151c 0%,#1a1d26 100%)!important}
+      `;
+    }
+    document.head.appendChild(s);
+  }
+
   async _applyBrandingToPrescreen() {
     const token = this._embedToken;
     if (!token) return;
@@ -973,6 +1090,7 @@ class WebRTCMeetingAPI {
           hdr.insertBefore(img, hdr.firstChild);
         }
       }
+      if (b.theme) this._applyTheme(b.theme);
     } catch(_) {}
   }
 
@@ -1004,6 +1122,7 @@ class WebRTCMeetingAPI {
         brand.innerHTML = `<img src="${b.logo_url}" alt="logo" style="max-height:28px;max-width:120px;object-fit:contain;border-radius:3px">`;
       }
     }
+    if (b.theme) this._applyTheme(b.theme);
   }
 
   async _applyBranding() {
