@@ -1290,6 +1290,8 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-mic-off").style.display = "";
     }
     this._startSpeakerDetection();
+    this._startQualityMonitor();
+    this._initAutoHideControls();
     this._restoreChatHistory();
   }
 
@@ -1369,7 +1371,27 @@ class WebRTCMeetingAPI {
       .wrtc-top>*{pointer-events:auto}
       .wrtc-top-left{display:flex;align-items:center;gap:14px}
       .wrtc-top-right{display:flex;align-items:center;gap:10px}
-      .wrtc-room-name{font-size:15px;font-weight:500;color:#fff;letter-spacing:.2px}
+      .wrtc-room-name{display:none}
+      .wrtc-info-btn{
+        width:26px;height:26px;border-radius:50%;border:1.5px solid rgba(255,255,255,.35);
+        background:rgba(255,255,255,.1);backdrop-filter:blur(8px);
+        color:#e8eaed;cursor:pointer;font-size:13px;font-weight:700;font-style:italic;
+        display:flex;align-items:center;justify-content:center;
+        position:relative;transition:background .15s;flex-shrink:0;
+      }
+      .wrtc-info-btn:hover{background:rgba(255,255,255,.2)}
+      .wrtc-info-tooltip{
+        position:absolute;top:calc(100% + 10px);left:0;
+        background:rgba(18,20,28,.96);backdrop-filter:blur(16px);
+        border:1px solid rgba(255,255,255,.12);border-radius:10px;
+        padding:8px 14px;font-size:13px;font-weight:500;
+        color:#e8eaed;white-space:nowrap;pointer-events:none;
+        opacity:0;transform:translateY(-6px);
+        transition:opacity .18s,transform .18s;
+        box-shadow:0 8px 24px rgba(0,0,0,.5);
+        font-style:normal;
+      }
+      .wrtc-info-btn:hover .wrtc-info-tooltip{opacity:1;transform:translateY(0)}
       .wrtc-clock{font-size:14px;color:rgba(255,255,255,.65)}
       .wrtc-rec-badge{
         display:none;align-items:center;gap:6px;
@@ -1401,7 +1423,7 @@ class WebRTCMeetingAPI {
       @keyframes wrtc-slide-in{from{opacity:0;transform:translateX(-50%) translateY(-12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       .wrtc-stage{
         flex:1;display:flex;align-items:stretch;
-        padding:68px 0 108px;overflow:hidden;transition:padding-right .25s;
+        padding:8px 0 8px;overflow:hidden;transition:padding-right .25s;
       }
 
       /* ── BRANDING LOGO ── */
@@ -1422,18 +1444,35 @@ class WebRTCMeetingAPI {
       }
 
       /* ── TILE ── */
+      @keyframes wrtc-tile-in{
+        from{opacity:0;transform:scale(.88)}
+        to{opacity:1;transform:scale(1)}
+      }
+      @keyframes wrtc-tile-out{
+        from{opacity:1;transform:scale(1)}
+        to{opacity:0;transform:scale(.88)}
+      }
+      @keyframes wrtc-speak-pulse{
+        0%,100%{box-shadow:0 0 0 3px #4d94ff,0 0 16px 4px rgba(77,148,255,.35),0 4px 24px rgba(0,0,0,.35)}
+        50%{box-shadow:0 0 0 4px #6aabff,0 0 28px 8px rgba(77,148,255,.55),0 4px 24px rgba(0,0,0,.35)}
+      }
       .wrtc-tile{
         position:relative;border-radius:16px;overflow:hidden;
         background:#1a1d28;width:100%;height:100%;min-height:0;
-        transition:box-shadow .3s,transform .3s;
+        transition:transform .3s;
         box-shadow:0 4px 24px rgba(0,0,0,.35);
+        animation:wrtc-tile-in .35s cubic-bezier(.34,1.4,.64,1) both;
       }
       .wrtc-tile video{
         width:100%;height:100%;object-fit:cover;display:block;background:#0d0f14;
       }
       #wrtc-local-video{transform:scaleX(-1)}
       .wrtc-tile.speaking{
-        box-shadow:0 0 0 3px #4d94ff,0 0 0 7px rgba(77,148,255,.15),0 8px 40px rgba(77,148,255,.25);
+        animation:wrtc-tile-in .35s cubic-bezier(.34,1.4,.64,1) both,wrtc-speak-pulse 1.4s ease-in-out infinite;
+      }
+      .wrtc-tile.wrtc-tile-leaving{
+        animation:wrtc-tile-out .28s ease-in forwards;
+        pointer-events:none;
       }
       .wrtc-tile-avatar{
         position:absolute;inset:0;
@@ -1441,18 +1480,33 @@ class WebRTCMeetingAPI {
         z-index:0;
       }
       .wrtc-tile-avatar.visible{ display:flex; }
+      @keyframes wrtc-shimmer{
+        0%{background-position:200% center}
+        100%{background-position:-200% center}
+      }
       .wrtc-tile-avatar span{
         width:clamp(48px,9vw,96px);height:clamp(48px,9vw,96px);
         border-radius:50%;display:flex;align-items:center;justify-content:center;
         font-size:clamp(18px,3.5vw,36px);font-weight:500;color:#fff;
+        position:relative;overflow:hidden;
+      }
+      .wrtc-tile-avatar span::after{
+        content:"";position:absolute;inset:0;border-radius:50%;
+        background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.28) 50%,transparent 70%);
+        background-size:200% 100%;
+        animation:wrtc-shimmer 2.4s linear infinite;
       }
       .wrtc-tile-label{
         position:absolute;bottom:10px;left:10px;z-index:2;
-        background:rgba(0,0,0,.55);backdrop-filter:blur(4px);
+        background:linear-gradient(135deg,rgba(255,255,255,.13) 0%,rgba(255,255,255,.06) 100%);
+        backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+        border:1px solid rgba(255,255,255,.18);
         color:#fff;font-size:12px;font-weight:500;
-        padding:3px 8px;border-radius:6px;
+        padding:4px 10px;border-radius:20px;
         max-width:calc(100% - 56px);
         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+        text-shadow:0 1px 3px rgba(0,0,0,.5);
+        box-shadow:0 2px 8px rgba(0,0,0,.25);
       }
       .wrtc-tile-hand{
         position:absolute;top:10px;right:10px;z-index:2;
@@ -1461,6 +1515,53 @@ class WebRTCMeetingAPI {
       }
       @keyframes wrtc-bounce{from{transform:translateY(0)}to{transform:translateY(-4px)}}
       .wrtc-tile-hand.raised{display:block}
+      /* ── PARTICLE BURST ── */
+      @keyframes wrtc-particle{
+        0%{transform:translate(0,0) scale(1);opacity:1}
+        100%{transform:translate(var(--px),var(--py)) scale(0);opacity:0}
+      }
+      .wrtc-particle{
+        position:fixed;width:7px;height:7px;border-radius:50%;
+        pointer-events:none;z-index:9999;
+        animation:wrtc-particle .7s ease-out forwards;
+      }
+      /* ── SPEAKING TOAST ── */
+      .wrtc-speak-toast{
+        position:fixed;bottom:100px;left:24px;z-index:9998;
+        background:rgba(18,20,28,.92);backdrop-filter:blur(16px);
+        border:1px solid rgba(255,255,255,.12);border-radius:24px;
+        padding:8px 16px;display:flex;align-items:center;gap:8px;
+        font-size:13px;font-weight:500;color:#e8eaed;
+        box-shadow:0 8px 24px rgba(0,0,0,.5);
+        opacity:0;transform:translateY(8px) scale(.96);
+        transition:opacity .2s,transform .2s;pointer-events:none;
+      }
+      .wrtc-speak-toast.show{opacity:1;transform:translateY(0) scale(1)}
+      .wrtc-speak-toast-dot{
+        width:8px;height:8px;border-radius:50%;flex-shrink:0;
+        animation:wrtc-speak-dot 1s ease-in-out infinite;
+      }
+      @keyframes wrtc-speak-dot{
+        0%,100%{transform:scale(1);opacity:1}
+        50%{transform:scale(1.4);opacity:.7}
+      }
+      /* ── SIGNAL BARS ── */
+      .wrtc-signal{
+        position:absolute;top:8px;left:8px;z-index:4;
+        display:flex;align-items:flex-end;gap:2px;pointer-events:none;
+        opacity:.85;
+      }
+      .wrtc-signal-bar{
+        width:4px;border-radius:1px;background:rgba(255,255,255,.25);
+        transition:background .4s,height .4s;
+      }
+      .wrtc-signal-bar:nth-child(1){height:5px}
+      .wrtc-signal-bar:nth-child(2){height:9px}
+      .wrtc-signal-bar:nth-child(3){height:13px}
+      .wrtc-signal[data-q="good"]  .wrtc-signal-bar{background:#34a853}
+      .wrtc-signal[data-q="ok"]    .wrtc-signal-bar:nth-child(1),
+      .wrtc-signal[data-q="ok"]    .wrtc-signal-bar:nth-child(2){background:#fbbc04}
+      .wrtc-signal[data-q="poor"]  .wrtc-signal-bar:nth-child(1){background:#ea4335}
       /* ── REACTION FLOAT ── */
       .wrtc-reaction-float{
         position:absolute;bottom:20%;left:50%;transform:translateX(-50%);
@@ -1490,13 +1591,7 @@ class WebRTCMeetingAPI {
       }
       .wrtc-reaction-emoji-btn:hover{background:rgba(255,255,255,.12);transform:scale(1.25)}
       .wrtc-reaction-emoji-btn:active{transform:scale(.9)}
-      .wrtc-tile-mic{
-        position:absolute;bottom:10px;right:8px;z-index:3;
-        width:26px;height:26px;border-radius:50%;
-        background:rgba(0,0,0,.55);backdrop-filter:blur(4px);
-        display:flex;align-items:center;justify-content:center;
-        pointer-events:none;
-      }
+      .wrtc-tile-mic{display:none!important}
       .wrtc-tile-mic-ring{
         position:absolute;inset:-4px;border-radius:50%;
         border:2.5px solid #50c878;transform:scale(0);opacity:0;
@@ -1678,13 +1773,18 @@ class WebRTCMeetingAPI {
       .wrtc-controls{
         position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:30;
         display:flex;align-items:center;justify-content:center;gap:6px;
-        padding:10px 16px;
+        padding:10px 16px 28px;
         background:rgba(18,20,28,0.88);
         backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
         border-radius:56px;
         border:1px solid rgba(255,255,255,.09);
         box-shadow:0 8px 40px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.06);
         white-space:nowrap;
+        transition:transform .38s cubic-bezier(.4,0,.2,1),opacity .38s;
+      }
+      .wrtc-controls.wrtc-ctrl-hidden{
+        transform:translateX(-50%) translateY(calc(100% + 32px));
+        opacity:0;pointer-events:none;
       }
       .wrtc-btn{
         width:46px;height:46px;border-radius:50%;border:none;
@@ -1700,6 +1800,39 @@ class WebRTCMeetingAPI {
       .wrtc-btn.admin-locked{opacity:.45;cursor:not-allowed;pointer-events:none}
       .wrtc-btn.on-air{background:rgba(26,115,232,.9);color:#fff;box-shadow:0 2px 12px rgba(26,115,232,.4)}
       .wrtc-btn.on-air:hover{background:#1a73e8}
+      /* ── MIC LIQUID FILL ── */
+      /* Inner wrapper clips liquid to circle, label stays outside */
+      .wrtc-mic-inner{
+        position:absolute;inset:0;border-radius:50%;
+        overflow:hidden;
+        transform:translateZ(0);
+        -webkit-mask-image:-webkit-radial-gradient(white,black);
+      }
+      .wrtc-vol-liquid{
+        position:absolute;bottom:0;left:0;width:100%;height:0%;
+        background:linear-gradient(180deg,#4cdb7a 0%,#1a9c45 100%);
+        transition:height .12s ease-out;
+        pointer-events:none;
+        overflow:hidden;
+      }
+      .wrtc-vol-liquid::before{
+        content:"";position:absolute;
+        top:-7px;left:-40%;
+        width:180%;height:14px;
+        background:rgba(100,230,150,.8);
+        border-radius:50%;
+        animation:wrtc-wave-x 2s ease-in-out infinite;
+      }
+      @keyframes wrtc-wave-x{
+        0%,100%{transform:translateX(0)}
+        50%{transform:translateX(16%)}
+      }
+      /* Icon pinned to centre inside the inner wrapper */
+      #wrtc-ico-mic,#wrtc-ico-mic-off{
+        position:absolute;top:50%;left:50%;
+        transform:translate(-50%,-50%);
+        z-index:2;
+      }
       .wrtc-btn-badge{
         position:absolute;top:1px;right:1px;
         width:16px;height:16px;border-radius:50%;
@@ -1709,9 +1842,9 @@ class WebRTCMeetingAPI {
       }
       .wrtc-btn-badge.show{display:flex}
       .wrtc-btn-label{
-        position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);
-        font-size:10px;color:rgba(255,255,255,.5);white-space:nowrap;
-        pointer-events:none;
+        position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);
+        font-size:9.5px;font-weight:500;color:rgba(255,255,255,.52);white-space:nowrap;
+        pointer-events:none;letter-spacing:.2px;
       }
       .wrtc-btn-leave{
         width:auto;border-radius:28px;padding:0 20px;gap:7px;
@@ -2060,7 +2193,7 @@ class WebRTCMeetingAPI {
         .wrtc-peer-chip{padding:3px 8px 3px 6px;font-size:12px;}
 
         /* ── Stage ── */
-        .wrtc-stage{padding:52px 0 88px;}
+        .wrtc-stage{padding:8px 0 8px;}
         /* Panel overlays full screen on mobile — no padding-right shift */
         .wrtc-stage.panel-open{padding-right:0}
 
@@ -2129,6 +2262,10 @@ class WebRTCMeetingAPI {
       <!-- TOP BAR -->
       <div class="wrtc-top">
         <div class="wrtc-top-left">
+          <button class="wrtc-info-btn" id="wrtc-info-btn" title="Room info">
+            i
+            <div class="wrtc-info-tooltip" id="wrtc-info-tooltip"></div>
+          </button>
           <span class="wrtc-room-name" id="wrtc-room-name"></span>
           <span class="wrtc-clock" id="wrtc-clock"></span>
           <div class="wrtc-rec-badge" id="wrtc-rec-badge">
@@ -2144,6 +2281,12 @@ class WebRTCMeetingAPI {
           </div>
           <div class="wrtc-status-dot" id="wrtc-status"></div>
         </div>
+      </div>
+
+      <!-- Speaking toast -->
+      <div class="wrtc-speak-toast" id="wrtc-speak-toast">
+        <div class="wrtc-speak-toast-dot" id="wrtc-speak-dot"></div>
+        <span id="wrtc-speak-name"></span>
       </div>
 
       <!-- STAGE -->
@@ -2275,12 +2418,16 @@ class WebRTCMeetingAPI {
 
         <!-- Mic -->
         <button class="wrtc-btn" id="wrtc-btn-mic" title="Mute / Unmute">
-          <svg id="wrtc-ico-mic" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-          </svg>
-          <svg id="wrtc-ico-mic-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-            <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
-          </svg>
+          <span class="wrtc-mic-inner">
+            <div class="wrtc-vol-liquid" id="wrtc-vol-liquid"></div>
+            <svg id="wrtc-ico-mic" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+            </svg>
+            <svg id="wrtc-ico-mic-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+              <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
+            </svg>
+          </span>
+          <span class="wrtc-btn-label" id="wrtc-lbl-mic">Mic</span>
         </button>
 
         <!-- Camera -->
@@ -2291,6 +2438,7 @@ class WebRTCMeetingAPI {
           <svg id="wrtc-ico-cam-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
             <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
           </svg>
+          <span class="wrtc-btn-label" id="wrtc-lbl-cam">Camera</span>
         </button>
 
         <div class="wrtc-divider"></div>
@@ -2301,16 +2449,21 @@ class WebRTCMeetingAPI {
             <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
           </svg>
           <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn" style="display:none"></div>
+          <span class="wrtc-btn-label">Chat</span>
         </button>
 
         <!-- Raise Hand -->
         <button class="wrtc-btn" id="wrtc-btn-hand" title="Raise hand">
           <span style="font-size:20px;line-height:1">✋</span>
+          <span class="wrtc-btn-label">Raise Hand</span>
         </button>
 
         <!-- Reactions -->
         <button class="wrtc-btn" id="wrtc-btn-react" title="Send a reaction">
-          <span style="font-size:20px;line-height:1">😊</span>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/>
+          </svg>
+          <span class="wrtc-btn-label">React</span>
         </button>
 
         <div class="wrtc-divider"></div>
@@ -2320,24 +2473,28 @@ class WebRTCMeetingAPI {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
           </svg>
+          <span class="wrtc-btn-label">Mute All</span>
         </button>
         <!-- Unmute All Mics (host only, shown after muting all) — slashed mic icon (muted state) -->
         <button class="wrtc-btn muted" id="wrtc-btn-unmuteall" title="Unmute all microphones" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
           </svg>
+          <span class="wrtc-btn-label">Unmute All</span>
         </button>
         <!-- Mute All Cams (host only, shown when cams not yet all muted) — normal camera icon (active state) -->
         <button class="wrtc-btn" id="wrtc-btn-mutecams" title="Mute all cameras" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
           </svg>
+          <span class="wrtc-btn-label">Cam Off</span>
         </button>
         <!-- Unmute All Cams (host only, shown after muting all cams) — slashed camera icon (muted state) -->
         <button class="wrtc-btn muted" id="wrtc-btn-unmutecams" title="Unmute all cameras" style="display:none">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
           </svg>
+          <span class="wrtc-btn-label">Cam On</span>
         </button>
 
         <div class="wrtc-divider"></div>
@@ -2347,6 +2504,7 @@ class WebRTCMeetingAPI {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
             <circle cx="12" cy="5"  r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
           </svg>
+          <span class="wrtc-btn-label">More</span>
         </button>
 
         <!-- Leave -->
@@ -2424,6 +2582,7 @@ class WebRTCMeetingAPI {
 
     // Wire up static elements
     document.getElementById("wrtc-room-name").textContent      = this.roomName;
+    document.getElementById("wrtc-info-tooltip").textContent   = "Room: " + this.roomName;
     document.getElementById("wrtc-room-hint").textContent      = this.roomName;
     document.getElementById("wrtc-pip-label").textContent      = (this._myName || "You") + this._hostTag("local");
     document.getElementById("wrtc-pip-avatar-text").textContent = this._getInitials(this._myName || "You");
@@ -3445,6 +3604,100 @@ class WebRTCMeetingAPI {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // PARTICLE BURST
+  // ═══════════════════════════════════════════════════════════════════════
+  _particleBurst(tile) {
+    const rect   = tile.getBoundingClientRect();
+    const cx     = rect.left + rect.width  / 2;
+    const cy     = rect.top  + rect.height / 2;
+    const colors = ["#4d94ff","#34a853","#fbbc04","#ea4335","#a142f4","#ff6d00","#00bcd4"];
+    const count  = 14;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * 2 * Math.PI;
+      const dist  = 55 + Math.random() * 50;
+      const px    = Math.round(Math.cos(angle) * dist);
+      const py    = Math.round(Math.sin(angle) * dist);
+      const el    = document.createElement("div");
+      el.className = "wrtc-particle";
+      el.style.cssText = `left:${cx}px;top:${cy}px;background:${colors[i % colors.length]};--px:${px}px;--py:${py}px;animation-delay:${(Math.random()*0.12).toFixed(2)}s`;
+      document.body.appendChild(el);
+      el.addEventListener("animationend", () => el.remove(), { once: true });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SPEAKING TOAST
+  // ═══════════════════════════════════════════════════════════════════════
+  _showSpeakToast(uid) {
+    const toast = document.getElementById("wrtc-speak-toast");
+    const dot   = document.getElementById("wrtc-speak-dot");
+    const name  = document.getElementById("wrtc-speak-name");
+    if (!toast) return;
+    const displayName = uid === "local" ? (this._myName || "You") : this._displayName(uid);
+    const color = uid === "local" ? "#4d94ff" : this._colorFromId(uid);
+    dot.style.background  = color;
+    name.textContent      = `${displayName} is speaking`;
+    clearTimeout(this._speakToastTimer);
+    toast.classList.add("show");
+    this._speakToastTimer = setTimeout(() => this._hideSpeakToast(), 3500);
+  }
+
+  _hideSpeakToast() {
+    document.getElementById("wrtc-speak-toast")?.classList.remove("show");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // CONNECTION QUALITY
+  // ═══════════════════════════════════════════════════════════════════════
+  _startQualityMonitor() {
+    const update = async () => {
+      for (const [uid, pc] of Object.entries(this._peerConnections)) {
+        try {
+          const stats = await pc.getStats();
+          let loss = 0, rtt = 0, found = false;
+          stats.forEach(r => {
+            if (r.type === "inbound-rtp" && r.kind === "video") {
+              const sent     = (r.packetsReceived || 0) + (r.packetsLost || 0);
+              loss = sent > 0 ? r.packetsLost / sent : 0;
+              found = true;
+            }
+            if (r.type === "candidate-pair" && r.state === "succeeded") {
+              rtt = r.currentRoundTripTime || 0;
+            }
+          });
+          if (!found) continue;
+          let q = "good";
+          if (loss > 0.08 || rtt > 0.4) q = "poor";
+          else if (loss > 0.02 || rtt > 0.15) q = "ok";
+          const sig = document.getElementById(`wrtc-signal-${uid}`);
+          if (sig) sig.dataset.q = q;
+        } catch {}
+      }
+    };
+    this._qualityInterval = setInterval(update, 4000);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AUTO-HIDE CONTROLS
+  // ═══════════════════════════════════════════════════════════════════════
+  _initAutoHideControls() {
+    const controls = document.getElementById("wrtc-controls");
+    const stage    = document.getElementById("wrtc-stage");
+    if (!controls || !stage) return;
+    let _hideTimer = null;
+    const show = () => {
+      controls.classList.remove("wrtc-ctrl-hidden");
+      clearTimeout(_hideTimer);
+      _hideTimer = setTimeout(() => controls.classList.add("wrtc-ctrl-hidden"), 10000);
+    };
+    stage.addEventListener("mousemove", show);
+    stage.addEventListener("mouseenter", show);
+    controls.addEventListener("mouseenter", () => clearTimeout(_hideTimer));
+    controls.addEventListener("mouseleave", show);
+    show();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // REACTIONS
   // ═══════════════════════════════════════════════════════════════════════
   _toggleReactionPicker() {
@@ -3541,6 +3794,14 @@ class WebRTCMeetingAPI {
           ring.style.transform = `scale(${s.toFixed(3)})`;
           ring.style.opacity   = o.toFixed(3);
         }
+        // Drive mic liquid fill in control bar (local only)
+        if (uid === "local") {
+          const liq = document.getElementById("wrtc-vol-liquid");
+          if (liq) {
+            const fill = this._micEnabled ? (Math.min(1, smoothed * 6) * 100).toFixed(1) + "%" : "0%";
+            liq.style.height = fill;
+          }
+        }
 
         if (smoothed > maxLevel) { maxLevel = smoothed; activeSpeaker = uid; }
       }
@@ -3557,6 +3818,9 @@ class WebRTCMeetingAPI {
             ? document.getElementById("wrtc-local-tile")
             : document.getElementById(`wrtc-tile-${activeSpeaker}`);
           el?.classList.add("speaking");
+          this._showSpeakToast(activeSpeaker);
+        } else {
+          this._hideSpeakToast();
         }
         this._currentSpeaker = activeSpeaker;
       }
@@ -5093,7 +5357,8 @@ class WebRTCMeetingAPI {
       if (focusWrap) focusWrap.style.display = "none";
       if (grid) grid.style.display = "";
     }
-    document.getElementById(leavingTileId)?.remove();
+    const _lt = document.getElementById(leavingTileId);
+    if (_lt) { _lt.classList.add("wrtc-tile-leaving"); _lt.addEventListener("animationend", () => _lt.remove(), { once: true }); }
     // Remove this user's thumb from the presentation strip (if active).
     document.querySelectorAll(`#wrtc-thumbs .wrtc-thumb-tile[data-user-id="${userId}"]`)
       .forEach(t => t.remove());
@@ -5188,9 +5453,17 @@ class WebRTCMeetingAPI {
       `<svg class="wrtc-mic-svg-on" width="13" height="13" viewBox="0 0 24 24" fill="white">` +
       `<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>`;
 
-    tile.append(video, avatarWrap, badge, pinOverlay, micInd, label, hand);
+    // Signal bars
+    const signal = document.createElement("div");
+    signal.className = "wrtc-signal";
+    signal.id = `wrtc-signal-${userId}`;
+    signal.innerHTML = `<div class="wrtc-signal-bar"></div><div class="wrtc-signal-bar"></div><div class="wrtc-signal-bar"></div>`;
+
+    tile.append(video, avatarWrap, badge, pinOverlay, micInd, label, hand, signal);
     grid.appendChild(tile);
     this._updateGrid();
+    // Particle burst
+    setTimeout(() => this._particleBurst(tile), 80);
   }
 
   // Called when a remote track arrives. Ensures the tile exists, then wires up the stream.
@@ -5600,6 +5873,7 @@ class WebRTCMeetingAPI {
     this._shareStream?.getTracks().forEach(t => t.stop());
     if (this._isRecording) this._mediaRecorder?.stop();
     clearInterval(this._clockTimer);
+    clearInterval(this._qualityInterval);
     if (this._speakerRafId) { cancelAnimationFrame(this._speakerRafId); this._speakerRafId = null; }
     if (this._audioCtx) { this._audioCtx.close(); this._audioCtx = null; }
     const lv = document.getElementById("wrtc-local-video"); if (lv) lv.srcObject = null;
