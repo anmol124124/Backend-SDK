@@ -972,8 +972,10 @@ class WebRTCMeetingAPI {
 
         /* Control bar — white frosted */
         [data-wrtc-theme="light"] .wrtc-controls{background:rgba(255,255,255,.92)!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 4px 24px rgba(0,0,0,.12),0 1px 4px rgba(0,0,0,.06)!important}
-        [data-wrtc-theme="light"] .wrtc-btn{background:rgba(0,0,0,.07)!important;color:#202124!important}
-        [data-wrtc-theme="light"] .wrtc-btn:hover{background:rgba(0,0,0,.13)!important}
+        [data-wrtc-theme="light"] .wrtc-btn{background:rgba(0,0,0,.08)!important;color:#202124!important}
+        [data-wrtc-theme="light"] .wrtc-btn:hover{background:rgba(0,0,0,.14)!important}
+        [data-wrtc-theme="light"] .wrtc-btn.muted,[data-wrtc-theme="light"] .wrtc-btn.active-feature{background:rgba(234,67,53,.9)!important;color:#fff!important}
+        [data-wrtc-theme="light"] .wrtc-btn.on-air{background:rgba(26,115,232,.9)!important;color:#fff!important}
         [data-wrtc-theme="light"] .wrtc-btn-label{color:rgba(0,0,0,.5)!important}
         [data-wrtc-theme="light"] .wrtc-btn-badge{border-color:rgba(255,255,255,.92)!important}
         [data-wrtc-theme="light"] .wrtc-divider{background:rgba(0,0,0,.12)!important}
@@ -997,6 +999,8 @@ class WebRTCMeetingAPI {
         [data-wrtc-theme="light"] .wrtc-you-tag{color:rgba(0,0,0,.4)!important}
         [data-wrtc-theme="light"] .wrtc-host-tag{color:#1a73e8!important}
         [data-wrtc-theme="light"] .wrtc-person-icon{color:rgba(0,0,0,.3)!important}
+        [data-wrtc-theme="light"] .wrtc-person-icon.muted{color:#ea4335!important}
+        [data-wrtc-theme="light"] .wrtc-person-icons button{background:rgba(0,0,0,.06)!important;border-color:rgba(0,0,0,.15)!important;color:#202124!important}
         /* Chat */
         [data-wrtc-theme="light"] .wrtc-chat-empty{color:rgba(0,0,0,.4)!important}
         [data-wrtc-theme="light"] .wrtc-msg-name{color:#1a73e8!important}
@@ -1019,11 +1023,18 @@ class WebRTCMeetingAPI {
         [data-wrtc-theme="light"] .wrtc-lobby{background:#e8eaed!important;color:#202124!important}
         [data-wrtc-theme="light"] .wrtc-lobby-card{background:#ffffff!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 24px 64px rgba(0,0,0,.12)!important}
         [data-wrtc-theme="light"] .wrtc-lobby-right{background:#fafafa!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-brand{color:rgba(0,0,0,.45)!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-brand svg{opacity:.6!important;filter:invert(1)!important}
         [data-wrtc-theme="light"] .wrtc-lobby-title{color:#202124!important}
-        [data-wrtc-theme="light"] .wrtc-lobby-room{color:#5f6368!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-room{color:rgba(0,0,0,.45)!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-room strong{color:#202124!important}
         [data-wrtc-theme="light"] .wrtc-lobby-input{background:rgba(0,0,0,.05)!important;border-color:rgba(0,0,0,.15)!important;color:#202124!important}
         [data-wrtc-theme="light"] .wrtc-lobby-input::placeholder{color:rgba(0,0,0,.35)!important}
-        [data-wrtc-theme="light"] .wrtc-lobby-brand svg path,[data-wrtc-theme="light"] .wrtc-lobby-brand svg rect{stroke:#5f6368!important}
+        [data-wrtc-theme="light"] .wrtc-lobby-input:focus{border-color:rgba(26,115,232,.6)!important}
+        [data-wrtc-theme="light"] .wrtc-join-btn:disabled{background:#d0d3d8!important;color:rgba(0,0,0,.4)!important}
+        /* Lobby preview buttons — keep visible on dark camera area */
+        [data-wrtc-theme="light"] .wrtc-lbtn{background:rgba(255,255,255,.2)!important;color:#fff!important}
+        [data-wrtc-theme="light"] .wrtc-lbtn:hover{background:rgba(255,255,255,.35)!important}
 
         /* Prescreen — light */
         [data-wrtc-theme="light"] .ep{background:#e8eaed!important}
@@ -1090,7 +1101,9 @@ class WebRTCMeetingAPI {
           hdr.insertBefore(img, hdr.firstChild);
         }
       }
-      if (b.theme) this._applyTheme(b.theme);
+      // Store so host lobby (_buildLobby) picks them up after embed token is cleared
+      this._branding = b;
+      if (b.theme) { this._theme = b.theme; this._applyTheme(b.theme); }
     } catch(_) {}
   }
 
@@ -1128,7 +1141,7 @@ class WebRTCMeetingAPI {
   async _applyBranding() {
     // Fetch project branding using the embed token and apply to lobby DOM.
     // Works for both embedToken-flow and direct room joins (guestToken has no project).
-    const token = this._embedToken;
+    const token = this._embedToken || this._embedTokenSaved || '';
     if (!token) return;
     try {
       const res = await fetch(
@@ -1171,6 +1184,7 @@ class WebRTCMeetingAPI {
           brand.innerHTML = `<img src="${b.logo_url}" alt="logo" style="max-height:28px;max-width:120px;object-fit:contain;border-radius:3px">`;
         }
       }
+      if (b.theme) { this._theme = b.theme; this._applyTheme(b.theme); }
     } catch (_) {
       // Branding fetch failed silently — use defaults
     }
