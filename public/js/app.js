@@ -972,6 +972,7 @@ class WebRTCMeetingAPI {
 
         /* Control bar — white frosted */
         [data-wrtc-theme="light"] .wrtc-controls{background:rgba(255,255,255,.92)!important;border-color:rgba(0,0,0,.1)!important;box-shadow:0 4px 24px rgba(0,0,0,.12),0 1px 4px rgba(0,0,0,.06)!important}
+        [data-wrtc-theme="light"] .wrtc-reaction-picker{background:rgba(255,255,255,.96)!important;border-color:rgba(0,0,0,.1)!important}
         [data-wrtc-theme="light"] .wrtc-btn{background:rgba(0,0,0,.08)!important;color:#202124!important}
         [data-wrtc-theme="light"] .wrtc-btn:hover{background:rgba(0,0,0,.14)!important}
         [data-wrtc-theme="light"] .wrtc-btn.muted,[data-wrtc-theme="light"] .wrtc-btn.active-feature{background:rgba(234,67,53,.9)!important;color:#fff!important}
@@ -1460,6 +1461,35 @@ class WebRTCMeetingAPI {
       }
       @keyframes wrtc-bounce{from{transform:translateY(0)}to{transform:translateY(-4px)}}
       .wrtc-tile-hand.raised{display:block}
+      /* ── REACTION FLOAT ── */
+      .wrtc-reaction-float{
+        position:absolute;bottom:20%;left:50%;transform:translateX(-50%);
+        font-size:36px;z-index:20;pointer-events:none;
+        animation:wrtc-float-up 2.8s ease-out forwards;
+      }
+      @keyframes wrtc-float-up{
+        0%{transform:translateX(-50%) translateY(0) scale(.6);opacity:0}
+        15%{opacity:1;transform:translateX(-50%) translateY(-8px) scale(1.15)}
+        70%{opacity:1;transform:translateX(-50%) translateY(-60px) scale(1)}
+        100%{opacity:0;transform:translateX(-50%) translateY(-90px) scale(.85)}
+      }
+      /* ── REACTION PICKER ── */
+      .wrtc-reaction-picker{
+        position:fixed;z-index:200;
+        background:rgba(18,20,28,.96);backdrop-filter:blur(20px);
+        border:1px solid rgba(255,255,255,.12);border-radius:40px;
+        padding:10px 14px;display:flex;gap:6px;align-items:center;
+        box-shadow:0 8px 32px rgba(0,0,0,.6);
+        transition:opacity .15s,transform .15s;
+      }
+      .wrtc-reaction-picker.hidden{opacity:0;pointer-events:none;transform:translateY(6px) scale(.95)}
+      .wrtc-reaction-emoji-btn{
+        background:none;border:none;cursor:pointer;
+        font-size:24px;line-height:1;padding:6px;border-radius:50%;
+        transition:background .12s,transform .12s;
+      }
+      .wrtc-reaction-emoji-btn:hover{background:rgba(255,255,255,.12);transform:scale(1.25)}
+      .wrtc-reaction-emoji-btn:active{transform:scale(.9)}
       .wrtc-tile-mic{
         position:absolute;bottom:10px;right:8px;z-index:3;
         width:26px;height:26px;border-radius:50%;
@@ -2278,6 +2308,11 @@ class WebRTCMeetingAPI {
           <span style="font-size:20px;line-height:1">✋</span>
         </button>
 
+        <!-- Reactions -->
+        <button class="wrtc-btn" id="wrtc-btn-react" title="Send a reaction">
+          <span style="font-size:20px;line-height:1">😊</span>
+        </button>
+
         <div class="wrtc-divider"></div>
 
         <!-- Mute All Mics (host only, shown when mics not yet all muted) — normal mic icon (active state) -->
@@ -2329,6 +2364,17 @@ class WebRTCMeetingAPI {
       <button id="wrtc-btn-people" style="display:none"></button>
       <button id="wrtc-btn-filter" style="display:none"></button>
       <button id="wrtc-btn-invite" style="display:none"></button>
+
+      <!-- Reaction picker popup -->
+      <div class="wrtc-reaction-picker hidden" id="wrtc-reaction-picker">
+        <button class="wrtc-reaction-emoji-btn" data-emoji="👍">👍</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="👏">👏</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="❤️">❤️</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="😂">😂</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="😮">😮</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="🎉">🎉</button>
+        <button class="wrtc-reaction-emoji-btn" data-emoji="🔥">🔥</button>
+      </div>
 
       <!-- 3-dot dropdown menu -->
       <div class="wrtc-more-menu" id="wrtc-more-menu" style="display:none">
@@ -2444,6 +2490,10 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-cam").addEventListener("click",   () => this._toggleCam());
     document.getElementById("wrtc-btn-chat").addEventListener("click",  () => this._togglePanel("chat"));
     document.getElementById("wrtc-btn-hand").addEventListener("click",  () => this._toggleHand());
+    document.getElementById("wrtc-btn-react").addEventListener("click", (e) => { e.stopPropagation(); this._toggleReactionPicker(); });
+    document.querySelectorAll(".wrtc-reaction-emoji-btn").forEach(btn => {
+      btn.addEventListener("click", (e) => { e.stopPropagation(); this._sendReaction(btn.dataset.emoji); });
+    });
     // 3-dot more menu
     document.getElementById("wrtc-btn-more").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2478,9 +2528,10 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-more-menu").style.display = "none";
       this._showInvite();
     });
-    // Close more menu on outside click
+    // Close more menu and reaction picker on outside click
     document.addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
+      document.getElementById("wrtc-reaction-picker")?.classList.add("hidden");
     });
     document.getElementById("wrtc-user-count").closest(".wrtc-peer-chip").addEventListener("click", () => this._togglePanel("people"));
     document.getElementById("wrtc-tab-people").addEventListener("click", () => this._switchTab("people"));
@@ -3391,6 +3442,56 @@ class WebRTCMeetingAPI {
   _updateHandUI(userId, raised) {
     const hand = document.getElementById(`wrtc-hand-${userId}`);
     if (hand) hand.classList.toggle("raised", raised);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // REACTIONS
+  // ═══════════════════════════════════════════════════════════════════════
+  _toggleReactionPicker() {
+    const picker = document.getElementById("wrtc-reaction-picker");
+    const btn    = document.getElementById("wrtc-btn-react");
+    const hidden = picker.classList.contains("hidden");
+    if (hidden) {
+      picker.classList.remove("hidden");
+      // Position above the button
+      const rect   = btn.getBoundingClientRect();
+      const pickerW = picker.offsetWidth || 310;
+      let left = rect.left + rect.width / 2 - pickerW / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - pickerW - 8));
+      picker.style.left   = left + "px";
+      picker.style.bottom = (window.innerHeight - rect.top + 10) + "px";
+      picker.style.top    = "";
+    } else {
+      picker.classList.add("hidden");
+    }
+  }
+
+  _sendReaction(emoji) {
+    document.getElementById("wrtc-reaction-picker")?.classList.add("hidden");
+    // Show on own tile
+    const localTile = document.getElementById("wrtc-local-tile");
+    if (localTile) this._showReactionOnTile(localTile, emoji);
+    // Broadcast to peers
+    this._sendWS({ type: "reaction", payload: { emoji } });
+  }
+
+  _showReactionOnTile(tileOrUserId, emoji) {
+    let tile;
+    if (typeof tileOrUserId === "string") {
+      tile = document.getElementById(`wrtc-tile-${tileOrUserId}`);
+    } else {
+      tile = tileOrUserId;
+    }
+    if (!tile) return;
+    // Randomise horizontal offset slightly so multiple reactions don't stack
+    const offset = (Math.random() - 0.5) * 40;
+    const el = document.createElement("div");
+    el.className = "wrtc-reaction-float";
+    el.textContent = emoji;
+    el.style.left = `calc(50% + ${offset}px)`;
+    tile.appendChild(el);
+    // Remove after animation ends
+    el.addEventListener("animationend", () => el.remove());
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -4547,6 +4648,11 @@ class WebRTCMeetingAPI {
           this._raisedHands.delete(from);
         }
         this._updateHandUI(from, raised);
+        break;
+      }
+
+      case "reaction": {
+        this._showReactionOnTile(from, payload.emoji);
         break;
       }
 
