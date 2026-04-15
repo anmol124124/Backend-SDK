@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
@@ -44,10 +44,17 @@ async def get_optional_user(
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme_optional),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    token = credentials.credentials
+    # httpOnly cookie (dashboard) takes precedence; Bearer header is the fallback
+    # (used by SDK embed code and direct API access).
+    token = request.cookies.get("access_token") or (
+        credentials.credentials if credentials else None
+    )
+    if not token:
+        raise _UNAUTHORIZED
 
     try:
         payload = decode_token(token)

@@ -30,3 +30,6 @@ aiofiles==23.2.1
 
 # Stripe payments
 stripe==10.4.0
+
+# Rate limiting
+slowapi==0.1.9

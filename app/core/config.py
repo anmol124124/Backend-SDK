@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # ── Auth cookie ───────────────────────────────────────────────────────
+    # Set to True in production (requires HTTPS). False is safe for local dev.
+    COOKIE_SECURE: bool = False
+
     # ── CORS ──────────────────────────────────────────────────────────────
     # Allow all origins — security is enforced via the domain allowlist in DB.
     # Customers embed the HTML on their own domains so we cannot predict origins.

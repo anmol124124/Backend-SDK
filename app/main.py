@@ -3,7 +3,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from fastapi.responses import FileResponse
 
 logging.basicConfig(
@@ -20,6 +24,7 @@ from app.core.dynamic_cors import DynamicCORSMiddleware
 from app.core.mediasoup_client import sfu
 from app.core.rabbitmq import close_rabbitmq, get_rabbitmq, init_rabbitmq
 from app.core.redis_client import close_redis, get_redis, init_redis
+from app.core.limiter import limiter
 from app.modules.auth.router import router as auth_router
 from app.modules.meeting.router import router as meeting_router
 from app.modules.meeting.websocket import router as signaling_router
@@ -52,6 +57,11 @@ app = FastAPI(
     lifespan=lifespan,
     redirect_slashes=False,
 )
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Dynamic CORS: allowed origins = CORS_ORIGINS env var + all project_domains in DB.

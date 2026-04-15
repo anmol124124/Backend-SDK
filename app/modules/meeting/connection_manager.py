@@ -45,6 +45,19 @@ class ConnectionManager:
         self._admitted_guests: dict[str, set[str]] = defaultdict(set)
         # per-room public chat history for late joiners (max 100 messages)
         self._public_chat: dict[str, list[dict]] = defaultdict(list)
+        # admin-forced media off state — keyed by base_user_id (UUID without suffix)
+        # persists through participant refresh/reconnect (server is authoritative)
+        self._forced_mic_off: dict[str, set[str]] = defaultdict(set)
+        self._forced_cam_off: dict[str, set[str]] = defaultdict(set)
+        # participant self-reported cam/mic state — keyed by base_user_id
+        # updated on every cam-state / mic-state message; included in user-list
+        self._participant_cam: dict[str, dict[str, bool]] = defaultdict(dict)
+        self._participant_mic: dict[str, dict[str, bool]] = defaultdict(dict)
+        # host bulk-mute state — persisted so button shows correctly after host refresh
+        self._all_mics_muted: dict[str, bool] = {}
+        self._all_cams_muted: dict[str, bool] = {}
+        # raised hands — base_user_id set per room; cleared when user lowers hand or leaves
+        self._raised_hands: dict[str, set[str]] = defaultdict(set)
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -134,11 +147,99 @@ class ConnectionManager:
             self._permanent_hosts.pop(meeting_id, None)
             self._admitted_guests.pop(meeting_id, None)
             self._public_chat.pop(meeting_id, None)
+            self._forced_mic_off.pop(meeting_id, None)
+            self._forced_cam_off.pop(meeting_id, None)
+            self._participant_cam.pop(meeting_id, None)
+            self._participant_mic.pop(meeting_id, None)
+            self._all_mics_muted.pop(meeting_id, None)
+            self._all_cams_muted.pop(meeting_id, None)
+            self._raised_hands.pop(meeting_id, None)
             self.cancel_host_grace(meeting_id)
             # NOTE: do NOT cancel time limit here — the meeting clock must not
             # reset if the host briefly disconnects and the room temporarily empties.
             # Time limit is cancelled only on explicit meeting end or when it fires.
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
+
+    # ── Admin-forced media state (server-authoritative) ──────────────────────
+
+    def set_forced_mic(self, room_id: str, base_user_id: str, off: bool) -> None:
+        if off:
+            self._forced_mic_off[room_id].add(base_user_id)
+        else:
+            self._forced_mic_off[room_id].discard(base_user_id)
+
+    def is_forced_mic_off(self, room_id: str, base_user_id: str) -> bool:
+        return base_user_id in self._forced_mic_off.get(room_id, set())
+
+    def get_forced_mic_off(self, room_id: str) -> list[str]:
+        return list(self._forced_mic_off.get(room_id, set()))
+
+    def set_forced_cam(self, room_id: str, base_user_id: str, off: bool) -> None:
+        if off:
+            self._forced_cam_off[room_id].add(base_user_id)
+        else:
+            self._forced_cam_off[room_id].discard(base_user_id)
+
+    def is_forced_cam_off(self, room_id: str, base_user_id: str) -> bool:
+        return base_user_id in self._forced_cam_off.get(room_id, set())
+
+    def get_forced_cam_off(self, room_id: str) -> list[str]:
+        return list(self._forced_cam_off.get(room_id, set()))
+
+    def clear_all_forced_mic(self, room_id: str) -> None:
+        self._forced_mic_off.pop(room_id, None)
+
+    def clear_all_forced_cam(self, room_id: str) -> None:
+        self._forced_cam_off.pop(room_id, None)
+
+    # ── Participant self-reported cam/mic state ────────────────────────────────
+
+    def set_participant_cam(self, room_id: str, base_user_id: str, enabled: bool) -> None:
+        self._participant_cam[room_id][base_user_id] = enabled
+
+    def set_participant_mic(self, room_id: str, base_user_id: str, enabled: bool) -> None:
+        self._participant_mic[room_id][base_user_id] = enabled
+
+    def get_participant_states(self, room_id: str) -> dict[str, dict]:
+        """Return {base_user_id: {cam: bool, mic: bool}} for all tracked participants."""
+        all_ids = set(self._participant_cam.get(room_id, {}).keys()) | \
+                  set(self._participant_mic.get(room_id, {}).keys())
+        return {
+            uid: {
+                "cam": self._participant_cam.get(room_id, {}).get(uid, True),
+                "mic": self._participant_mic.get(room_id, {}).get(uid, True),
+            }
+            for uid in all_ids
+        }
+
+    def remove_participant_state(self, room_id: str, base_user_id: str) -> None:
+        self._participant_cam.get(room_id, {}).pop(base_user_id, None)
+        self._participant_mic.get(room_id, {}).pop(base_user_id, None)
+
+    # ── Host bulk-mute state ──────────────────────────────────────────────────
+
+    def set_all_mics_muted(self, room_id: str, muted: bool) -> None:
+        self._all_mics_muted[room_id] = muted
+
+    def is_all_mics_muted(self, room_id: str) -> bool:
+        return self._all_mics_muted.get(room_id, False)
+
+    def set_all_cams_muted(self, room_id: str, muted: bool) -> None:
+        self._all_cams_muted[room_id] = muted
+
+    def is_all_cams_muted(self, room_id: str) -> bool:
+        return self._all_cams_muted.get(room_id, False)
+
+    # ── Raised hands ──────────────────────────────────────────────────────────
+
+    def set_hand_raised(self, room_id: str, base_user_id: str, raised: bool) -> None:
+        if raised:
+            self._raised_hands[room_id].add(base_user_id)
+        else:
+            self._raised_hands[room_id].discard(base_user_id)
+
+    def get_raised_hands(self, room_id: str) -> list[str]:
+        return list(self._raised_hands.get(room_id, set()))
 
     # ── Host management ───────────────────────────────────────────────────────
 

@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
+from app.core.limiter import limiter
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -75,7 +77,8 @@ async def list_projects(
 # ── Public embed domain check (no auth required) ─────────────────────────────
 
 @router.get("/embed-check")
-async def embed_check(token: str, request: Request) -> JSONResponse:
+@limiter.limit("30/minute")
+async def embed_check(request: Request, token: str) -> JSONResponse:
     origin = request.headers.get("origin") or request.headers.get("referer", "")
     logger.warning("embed-check origin=%r referer=%r allowed_result=pending", origin, request.headers.get("referer", ""))
     allowed = await check_embed_domain(token, origin)

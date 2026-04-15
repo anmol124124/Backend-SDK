@@ -181,11 +181,11 @@ class WebRTCMeetingAPI {
 
     fetch(this._httpBase + '/api/v1/projects/embed-check?token=' + encodeURIComponent(this.token))
       .then(res => {
-        console.log('[WRTC] embed-check status:', res.status, res.ok);
+        this._log('embed-check status: ' + res.status + ' ok=' + res.ok);
         if (!res.ok) { this._showAccessDenied(); return; }
         if (savedName) { this._showReconnecting(savedName); } else { this._buildLobby(); }
       })
-      .catch((err) => { console.error('[WRTC] embed-check FAILED (catch):', err); this._showAccessDenied(); });
+      .catch((err) => { this._log('embed-check failed: ' + err, undefined, "error"); this._showAccessDenied(); });
   }
 
   _showEmbedPrescreen() {
@@ -1271,6 +1271,13 @@ class WebRTCMeetingAPI {
       this._camEnabled = false;
       this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
     }
+    // Re-apply host-forced mute state — keeps admin mute active through participant refresh
+    if (sessionStorage.getItem('wrtc_force_mic_' + this.roomName) === '1') {
+      this._micLocked = true; this._hostMutedMic = true;
+    }
+    if (sessionStorage.getItem('wrtc_force_cam_' + this.roomName) === '1') {
+      this._camLocked = true; this._hostMutedCam = true;
+    }
     this._buildUI();
     const localVid = document.getElementById("wrtc-local-video");
     if (localVid) {
@@ -1284,10 +1291,18 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-ico-cam").style.display     = "none";
       document.getElementById("wrtc-ico-cam-off").style.display = "";
     }
+    if (this._camLocked) {
+      document.getElementById("wrtc-btn-cam")?.classList.add("admin-locked");
+      document.getElementById("wrtc-btn-cam")?.setAttribute("title", "Disabled by host");
+    }
     if (!this._micEnabled) {
       document.getElementById("wrtc-btn-mic").classList.add("muted");
       document.getElementById("wrtc-ico-mic").style.display     = "none";
       document.getElementById("wrtc-ico-mic-off").style.display = "";
+    }
+    if (this._micLocked) {
+      document.getElementById("wrtc-btn-mic")?.classList.add("admin-locked");
+      document.getElementById("wrtc-btn-mic")?.setAttribute("title", "Disabled by host");
     }
     this._startSpeakerDetection();
     this._startQualityMonitor();
@@ -2794,6 +2809,7 @@ class WebRTCMeetingAPI {
           }
           this._micEnabled    = true;
           this._selfMutedMic  = false; // participant turned mic on themselves
+          sessionStorage.removeItem('wrtc_self_mic_' + this.roomName);
           sessionStorage.setItem('wrtc_mic_' + this.roomName, '1');
           document.getElementById("wrtc-btn-mic").classList.remove("muted");
           document.getElementById("wrtc-ico-mic").style.display     = "";
@@ -2810,6 +2826,8 @@ class WebRTCMeetingAPI {
 
     this._micEnabled = !this._micEnabled;
     this._selfMutedMic = !this._micEnabled; // true when participant turns mic off, false when on
+    if (this._selfMutedMic) sessionStorage.setItem('wrtc_self_mic_' + this.roomName, '1');
+    else sessionStorage.removeItem('wrtc_self_mic_' + this.roomName);
     this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
     sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-mic").classList.toggle("muted", !this._micEnabled);
@@ -2851,6 +2869,7 @@ class WebRTCMeetingAPI {
           this._camEnabled   = true;
           this._selfMutedCam = false; // participant turned cam on themselves
           sessionStorage.setItem('wrtc_cam_' + this.roomName, '1');
+          sessionStorage.removeItem('wrtc_self_cam_' + this.roomName);
           document.getElementById("wrtc-btn-cam").classList.remove("muted");
           document.getElementById("wrtc-ico-cam").style.display     = "";
           document.getElementById("wrtc-ico-cam-off").style.display = "none";
@@ -2868,6 +2887,8 @@ class WebRTCMeetingAPI {
 
     this._camEnabled = !this._camEnabled;
     this._selfMutedCam = !this._camEnabled; // true when participant turns cam off, false when on
+    if (this._selfMutedCam) sessionStorage.setItem('wrtc_self_cam_' + this.roomName, '1');
+    else sessionStorage.removeItem('wrtc_self_cam_' + this.roomName);
     this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
     sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
     document.getElementById("wrtc-btn-cam").classList.toggle("muted", !this._camEnabled);
@@ -3400,8 +3421,11 @@ class WebRTCMeetingAPI {
       // ── Mic button ──────────────────────────────────────────────────────────
       // Show "Mute" when mic is on, "Unmute" only when admin force-muted them,
       // nothing when participant self-muted (no confusion).
-      const micOn = this._micStates[userId] !== false; // default: assume on if unknown
-      const adminMutedMic = this._hostForcedOffMic.has(userId);
+      // _hostForcedOffMic stores base user IDs (UUID without session suffix).
+      const baseUserId = userId.split('_')[0];
+      const adminMutedMic = this._hostForcedOffMic.has(baseUserId);
+      // If admin already force-muted, treat mic as off regardless of self-reported state
+      const micOn = adminMutedMic ? false : (this._micStates[userId] !== false);
       if (micOn || adminMutedMic) {
         const muteBtn = document.createElement("button");
         muteBtn.dataset.uid = userId;
@@ -3411,7 +3435,7 @@ class WebRTCMeetingAPI {
           muteBtn.title = "Mute microphone";
           muteBtn.addEventListener("click", () => {
             this._sendWS({ type: "host-mute-user", payload: { target_id: userId } });
-            this._hostForcedOffMic.add(userId);
+            this._hostForcedOffMic.add(baseUserId);
             this._micStates[userId] = false;
             this._renderParticipants();
           });
@@ -3420,7 +3444,7 @@ class WebRTCMeetingAPI {
           muteBtn.title = "Unmute microphone";
           muteBtn.addEventListener("click", () => {
             this._sendWS({ type: "host-unmute-user", payload: { target_id: userId } });
-            this._hostForcedOffMic.delete(userId);
+            this._hostForcedOffMic.delete(baseUserId);
             this._micStates[userId] = true;
             this._renderParticipants();
           });
@@ -3431,8 +3455,9 @@ class WebRTCMeetingAPI {
       // ── Cam button ──────────────────────────────────────────────────────────
       // Show "Cam off" when cam is on, "Cam on" only when admin force-turned it off,
       // nothing when participant self-turned it off (no confusion).
-      const camOn = this._camStates[userId] !== false; // default: assume on if unknown
-      const adminMutedCam = this._hostForcedOffCam.has(userId);
+      const adminMutedCam = this._hostForcedOffCam.has(baseUserId);
+      // If admin already force-turned off, treat cam as off regardless of self-reported state
+      const camOn = adminMutedCam ? false : (this._camStates[userId] !== false);
       if (camOn || adminMutedCam) {
         const camBtn = document.createElement("button");
         camBtn.style.cssText = _btnStyle;
@@ -3441,7 +3466,7 @@ class WebRTCMeetingAPI {
           camBtn.title = "Turn off camera";
           camBtn.addEventListener("click", () => {
             this._sendWS({ type: "host-cam-off-user", payload: { target_id: userId } });
-            this._hostForcedOffCam.add(userId);
+            this._hostForcedOffCam.add(baseUserId);
             this._camStates[userId] = false;
             this._renderParticipants();
           });
@@ -3450,7 +3475,7 @@ class WebRTCMeetingAPI {
           camBtn.title = "Turn on camera";
           camBtn.addEventListener("click", () => {
             this._sendWS({ type: "host-cam-on-user", payload: { target_id: userId } });
-            this._hostForcedOffCam.delete(userId);
+            this._hostForcedOffCam.delete(baseUserId);
             this._camStates[userId] = true;
             this._renderParticipants();
           });
@@ -3596,6 +3621,9 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-pip-hand").classList.toggle("raised", this._handRaised);
     this._sendWS({ type: "raise-hand", payload: { raised: this._handRaised } });
     this._toast(this._handRaised ? "You raised your hand ✋" : "Hand lowered");
+    // Persist so hand stays raised through a page refresh
+    if (this._handRaised) sessionStorage.setItem('wrtc_hand_' + this.roomName, '1');
+    else                  sessionStorage.removeItem('wrtc_hand_' + this.roomName);
   }
 
   _updateHandUI(userId, raised) {
@@ -4225,7 +4253,7 @@ class WebRTCMeetingAPI {
   }
 
   _knockAction(guestId, action) {
-    console.log('[WRTC] knock action sent  action=' + action + '  guestId=' + guestId);
+    this._log('knock action sent  action=' + action + '  guestId=' + guestId);
     this._sendWS({ type: action, payload: { guestId } });
     document.getElementById("wrtc-knock-entry-" + guestId)?.remove();
     document.getElementById("wrtc-knock-popup-" + guestId)?.remove();
@@ -4440,6 +4468,7 @@ class WebRTCMeetingAPI {
   // LOGGER
   // ═══════════════════════════════════════════════════════════════════════
   _log(msg, data, level = "info") {
+    if (!window.WRTC_DEBUG) return;
     const ts  = new Date().toTimeString().slice(0, 8);
     const out = data !== undefined ? `${msg} ${JSON.stringify(data)}` : msg;
     (level === "error" ? console.error : level === "warn" ? console.warn : console.log)(`[${ts}] ${out}`);
@@ -4480,12 +4509,12 @@ class WebRTCMeetingAPI {
     const reconnectParam = this._isReconnecting ? "&reconnect=1" : "";
     const uidParam = `&uid=${encodeURIComponent(this._getBrowserUID())}`;
     const url = `${this.serverUrl}/ws/meetings/${this.roomName}?token=${this.token}${nameParam}${reconnectParam}${uidParam}`;
-    console.log(`[WRTC] _setupWebSocket  attempt=${this._wsReconnectAttempts}  reconnect=${this._isReconnecting}  url=${url}`);
+    this._log(`_setupWebSocket  attempt=${this._wsReconnectAttempts}  reconnect=${this._isReconnecting}`);
     this._log("Connecting WebSocket…");
     this._ws = new WebSocket(url);
 
     this._ws.onopen = () => {
-      console.log('[WRTC] WS opened  room=' + this.roomName + '  name=' + this._myName);
+      this._log('WS opened  room=' + this.roomName + '  name=' + this._myName);
       this._log("WS connected", undefined, "ok");
       this._setStatus("ok");
       // Reset reconnect backoff on successful connection
@@ -4500,8 +4529,7 @@ class WebRTCMeetingAPI {
     };
 
     this._ws.onclose = (e) => {
-      console.warn(`[WRTC] WS closed  code=${e.code}  reason=${e.reason}  isLeaving=${this._isLeaving}`);
-      this._log(`WS closed — code=${e.code}`, undefined, "warn");
+      this._log(`WS closed  code=${e.code}  reason=${e.reason}  isLeaving=${this._isLeaving}`, undefined, "warn");
       this._setStatus("err");
 
       // Codes that mean "don't retry" — user left, was kicked, meeting ended,
@@ -4515,7 +4543,7 @@ class WebRTCMeetingAPI {
         4430,  // Room full
       ];
       if (this._isLeaving || _noRetry.includes(e.code)) {
-        console.log(`[WRTC] WS closed permanently — no reconnect  code=${e.code}  isLeaving=${this._isLeaving}`);
+        this._log(`WS closed permanently — no reconnect  code=${e.code}  isLeaving=${this._isLeaving}`);
         if (e.code === 4403) {
           sessionStorage.removeItem("wrtc_name_" + this.roomName);
           sessionStorage.removeItem("meet_session_" + this.roomName);
@@ -4523,6 +4551,11 @@ class WebRTCMeetingAPI {
           sessionStorage.removeItem("wrtc_cam_" + this.roomName);
           sessionStorage.removeItem("wrtc_start_" + this.roomName);
           sessionStorage.removeItem("wrtc_chat_" + this.roomName);
+          sessionStorage.removeItem("wrtc_hand_" + this.roomName);
+          sessionStorage.removeItem("wrtc_force_mic_" + this.roomName);
+          sessionStorage.removeItem("wrtc_force_cam_" + this.roomName);
+          sessionStorage.removeItem("wrtc_admin_mic_" + this.roomName);
+          sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
           this.parentNode.innerHTML =
             '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
             'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
@@ -4544,13 +4577,13 @@ class WebRTCMeetingAPI {
       // with exponential backoff: 1 s, 2 s, 4 s, 8 s, 16 s, then cap at 30 s.
       this._wsReconnectAttempts += 1;
       const _delay = Math.min(1000 * Math.pow(2, this._wsReconnectAttempts - 1), 30000);
-      console.log(`[WRTC] WS reconnect scheduled  attempt=${this._wsReconnectAttempts}  delay=${_delay}ms`);
+      this._log(`WS reconnect scheduled  attempt=${this._wsReconnectAttempts}  delay=${_delay}ms`);
       this._log(`Connection lost — reconnecting in ${Math.round(_delay / 1000)}s…`, undefined, "warn");
 
       clearTimeout(this._wsReconnectTimer);
       this._wsReconnectTimer = setTimeout(() => {
         if (this._isLeaving) return;
-        console.log(`[WRTC] WS reconnecting now  attempt=${this._wsReconnectAttempts}`);
+        this._log(`WS reconnecting now  attempt=${this._wsReconnectAttempts}`);
         // reconnect=1 tells the server this is a returning user, not a fresh join,
         // so admitted guests bypass the knock queue and the host reclaims host role.
         this._isReconnecting = true;
@@ -4559,7 +4592,6 @@ class WebRTCMeetingAPI {
     };
 
     this._ws.onerror = (e) => {
-      console.error('[WRTC] WS error', e);
       this._log("WS error", undefined, "error");
       this._setStatus("err");
       // onclose will fire immediately after onerror — reconnect logic lives there
@@ -4643,11 +4675,87 @@ class WebRTCMeetingAPI {
         this._isHost     = payload.isHost || false;
         this._hostUserId = payload.hostId || null;
         this._settings   = payload.settings || {};
-        console.log('[WRTC] user-list received  room=' + this.roomName + '  myId=' + this._myUserId + '  isHost=' + this._isHost);
+        this._log('user-list received  room=' + this.roomName + '  myId=' + this._myUserId + '  isHost=' + this._isHost);
         // Only now is the user admitted — safe to persist name for reconnect
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');
+        // ── Server-authoritative forced media state ──────────────────────────
+        // Apply BEFORE _buildUIAfterAdmit so the UI is built with correct lock state.
+        // Server sends forcedMicOff/forcedCamOff based on base user ID — survives refresh.
+        if (payload.forcedMicOff) {
+          this._micLocked = true; this._hostMutedMic = true;
+          this._micEnabled = false;
+          this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
+          sessionStorage.setItem('wrtc_mic_' + this.roomName, '0');
+          sessionStorage.setItem('wrtc_force_mic_' + this.roomName, '1');
+        } else {
+          // Server says no force-lock — clear any stale sessionStorage from prior session
+          sessionStorage.removeItem('wrtc_force_mic_' + this.roomName);
+          this._micLocked = false;
+        }
+        if (payload.forcedCamOff) {
+          this._camLocked = true; this._hostMutedCam = true;
+          this._camEnabled = false;
+          this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+          sessionStorage.setItem('wrtc_cam_' + this.roomName, '0');
+          sessionStorage.setItem('wrtc_force_cam_' + this.roomName, '1');
+        } else {
+          sessionStorage.removeItem('wrtc_force_cam_' + this.roomName);
+          this._camLocked = false;
+        }
+        // Restore admin tracking sets from server (base user IDs — survives all refreshes)
+        if (Array.isArray(payload.forcedMicUsers))
+          this._hostForcedOffMic = new Set(payload.forcedMicUsers);
+        if (Array.isArray(payload.forcedCamUsers))
+          this._hostForcedOffCam = new Set(payload.forcedCamUsers);
+        // Apply mute-all lock for participants — if admin did mute-all/cam-mute-all the lock
+        // must survive participant refresh too (not just the host's button state).
+        if (!this._isHost) {
+          if (payload.allMicsMuted && !this._micLocked) {
+            this._micLocked = true; this._hostMutedMic = true;
+            this._micEnabled = false;
+            this._localStream?.getAudioTracks().forEach(t => { t.enabled = false; });
+            sessionStorage.setItem('wrtc_mic_' + this.roomName, '0');
+            sessionStorage.setItem('wrtc_force_mic_' + this.roomName, '1');
+          }
+          if (payload.allCamsMuted && !this._camLocked) {
+            this._camLocked = true; this._hostMutedCam = true;
+            this._camEnabled = false;
+            this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
+            sessionStorage.setItem('wrtc_cam_' + this.roomName, '0');
+            sessionStorage.setItem('wrtc_force_cam_' + this.roomName, '1');
+          }
+          // Restore self-mute flags so admin cannot override participant's own choice after refresh
+          if (sessionStorage.getItem('wrtc_self_mic_' + this.roomName) === '1') this._selfMutedMic = true;
+          if (sessionStorage.getItem('wrtc_self_cam_' + this.roomName) === '1') this._selfMutedCam = true;
+        }
+        // Populate cam/mic states from server so admin panel is correct immediately after refresh.
+        // participantStates is keyed by base_user_id; map to session_ids via payload.users.
+        if (payload.participantStates && typeof payload.participantStates === 'object') {
+          payload.users.forEach(uid => {
+            const base = uid.split('_')[0];
+            const st = payload.participantStates[base];
+            if (st) {
+              if (typeof st.cam === 'boolean') this._camStates[uid] = st.cam;
+              if (typeof st.mic === 'boolean') this._micStates[uid] = st.mic;
+            }
+          });
+        }
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
+        // Restore host bulk-mute button state AFTER _applySettings — it re-shows muteall/mutecams
+        // unconditionally for host, so we must override it here to reflect the real muted state.
+        if (this._isHost) {
+          this._allMicsMuted = !!payload.allMicsMuted;
+          this._allCamsMuted = !!payload.allCamsMuted;
+          const muteAllBtn    = document.getElementById("wrtc-btn-muteall");
+          const unmuteAllBtn  = document.getElementById("wrtc-btn-unmuteall");
+          const muteCamsBtn   = document.getElementById("wrtc-btn-mutecams");
+          const unmuteCamsBtn = document.getElementById("wrtc-btn-unmutecams");
+          if (muteAllBtn)    muteAllBtn.style.display    = this._allMicsMuted ? "none" : "";
+          if (unmuteAllBtn)  unmuteAllBtn.style.display  = this._allMicsMuted ? ""     : "none";
+          if (muteCamsBtn)   muteCamsBtn.style.display   = this._allCamsMuted ? "none" : "";
+          if (unmuteCamsBtn) unmuteCamsBtn.style.display = this._allCamsMuted ? ""     : "none";
+        }
         // Show sub-tabs for everyone — guests need the Private tab to receive host replies
         const subtabs = document.getElementById("wrtc-chat-subtabs");
         if (subtabs) subtabs.style.display = "flex";
@@ -4655,9 +4763,8 @@ class WebRTCMeetingAPI {
         // by the knock-wait drain loop and never reach the main relay, so we re-send
         // them here after admission when the main message loop is active.
         this._sendWS({ type: "name", payload: { name: this._myName } });
-        if (!this._camEnabled) {
-          this._sendWS({ type: "cam-state", payload: { enabled: false } });
-        }
+        this._sendWS({ type: "cam-state", payload: { enabled: this._camEnabled } });
+        this._sendWS({ type: "mic-state", payload: { enabled: this._micEnabled } });
         // Populate participants for users already in room (names arrive via "name" messages)
         payload.users.forEach(uid => { this._participants[uid] = this._displayName(uid); });
         this._renderParticipants();
@@ -4665,6 +4772,24 @@ class WebRTCMeetingAPI {
         // even if they have no camera/mic tracks (ontrack would never fire for them).
         payload.users.forEach(uid => this._ensureRemoteTile(uid));
         this._updateGrid();  // set initial solo/grid state
+        // Restore raise-hand state after reconnect and re-broadcast so others see it
+        if (sessionStorage.getItem('wrtc_hand_' + this.roomName) === '1') {
+          this._handRaised = true;
+          document.getElementById("wrtc-btn-hand")?.classList.add("active-feature");
+          document.getElementById("wrtc-pip-hand")?.classList.add("raised");
+          this._sendWS({ type: "raise-hand", payload: { raised: true } });
+        }
+        // Restore raised-hand indicators for other participants from server state
+        if (Array.isArray(payload.raisedHands) && payload.raisedHands.length) {
+          const raisedSet = new Set(payload.raisedHands);
+          payload.users.forEach(uid => {
+            const base = uid.split('_')[0];
+            if (raisedSet.has(base)) {
+              this._raisedHands.add(uid);
+              this._updateHandUI(uid, true);
+            }
+          });
+        }
         // Show host welcome card
         if (this._isHost) this._showMeetingReadyCard();
         // Kick off SFU if mediasoup is available.
@@ -4684,9 +4809,8 @@ class WebRTCMeetingAPI {
         this._ensureRemoteTile(payload.user_id);
         // Tell the new joiner our name and camera state
         this._sendWS({ type: "name", payload: { name: this._myName } });
-        if (!this._camEnabled) {
-          this._sendWS({ type: "cam-state", payload: { enabled: false } });
-        }
+        this._sendWS({ type: "cam-state", payload: { enabled: this._camEnabled } });
+        this._sendWS({ type: "mic-state", payload: { enabled: this._micEnabled } });
         // If we're presenting, re-announce so late joiner gets the layout
         if (this._isSharing) {
           setTimeout(() => this._sendWS({ type: "presenting", payload: { active: true } }), 800);
@@ -4726,6 +4850,13 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_cam_" + this.roomName);
         sessionStorage.removeItem("wrtc_start_" + this.roomName);
         sessionStorage.removeItem("wrtc_chat_" + this.roomName);
+        sessionStorage.removeItem("wrtc_hand_" + this.roomName);
+        sessionStorage.removeItem("wrtc_force_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_force_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_admin_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_self_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_self_cam_" + this.roomName);
         this._ws?.close();
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
@@ -4746,6 +4877,13 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_cam_" + this.roomName);
         sessionStorage.removeItem("wrtc_start_" + this.roomName);
         sessionStorage.removeItem("wrtc_chat_" + this.roomName);
+        sessionStorage.removeItem("wrtc_hand_" + this.roomName);
+        sessionStorage.removeItem("wrtc_force_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_force_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_admin_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
+        sessionStorage.removeItem("wrtc_self_mic_" + this.roomName);
+        sessionStorage.removeItem("wrtc_self_cam_" + this.roomName);
         this._ws?.close();
         const _isHostEnd = this._isHost;
         const _plan = payload.plan || "free";
@@ -5082,7 +5220,9 @@ class WebRTCMeetingAPI {
         if (from === this._myUserId) break; // ignore own echo
         this._camStates[from] = payload.enabled;
         // If participant turned cam back on themselves, clear admin force-off tracking
-        if (payload.enabled) this._hostForcedOffCam.delete(from);
+        if (payload.enabled) {
+          this._hostForcedOffCam.delete(from.split('_')[0]);
+        }
         const avatarEl = document.getElementById(`wrtc-avatar-${from}`);
         if (avatarEl) avatarEl.classList.toggle("visible", !payload.enabled);
         if (this._isHost && this._panelTab === "people") this._renderParticipants();
@@ -5093,7 +5233,9 @@ class WebRTCMeetingAPI {
         if (from === this._myUserId) break; // ignore own echo
         this._micStates[from] = payload.enabled;
         // If participant turned mic back on themselves, clear admin force-off tracking
-        if (payload.enabled) this._hostForcedOffMic.delete(from);
+        if (payload.enabled) {
+          this._hostForcedOffMic.delete(from.split('_')[0]);
+        }
         if (this._isHost && this._panelTab === "people") this._renderParticipants();
         break;
       }
@@ -5157,6 +5299,7 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "none";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "flex";
         this._toast("Your camera was disabled by the host");
+        this._sendWS({ type: "cam-state", payload: { enabled: false } });
         break;
 
       case "cam-unmute-all":
@@ -5174,6 +5317,7 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "block";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "none";
         this._toast("Your camera was enabled by the host");
+        this._sendWS({ type: "cam-state", payload: { enabled: true } });
         break;
 
       // ── Per-user force mute/unmute from host ──────────────────────────────────
@@ -5188,6 +5332,9 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "";
         this._syncLocalMicTile();
         this._toast("Your microphone was disabled by the host");
+        sessionStorage.setItem('wrtc_mic_' + this.roomName, '0');
+        sessionStorage.setItem('wrtc_force_mic_' + this.roomName, '1');
+        this._sendWS({ type: "mic-state", payload: { enabled: false } });
         break;
 
       case "you-are-force-unmuted":
@@ -5203,6 +5350,8 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-ico-mic-off")) document.getElementById("wrtc-ico-mic-off").style.display = "none";
         this._syncLocalMicTile();
         this._toast("Your microphone was enabled by the host");
+        this._sendWS({ type: "mic-state", payload: { enabled: true } });
+        sessionStorage.removeItem('wrtc_force_mic_' + this.roomName);
         break;
 
       case "you-are-force-cam-off":
@@ -5217,6 +5366,10 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "none";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "flex";
         this._toast("Your camera was disabled by the host");
+        sessionStorage.setItem('wrtc_cam_' + this.roomName, '0');
+        sessionStorage.setItem('wrtc_force_cam_' + this.roomName, '1');
+        // Broadcast so other participants show avatar immediately
+        this._sendWS({ type: "cam-state", payload: { enabled: false } });
         break;
 
       case "you-are-force-cam-on":
@@ -5233,6 +5386,9 @@ class WebRTCMeetingAPI {
         if (document.getElementById("wrtc-local-video")) document.getElementById("wrtc-local-video").style.display = "block";
         if (document.getElementById("wrtc-pip-avatar"))  document.getElementById("wrtc-pip-avatar").style.display  = "none";
         this._toast("Your camera was enabled by the host");
+        sessionStorage.removeItem('wrtc_force_cam_' + this.roomName);
+        // Broadcast so other participants hide avatar and show video
+        this._sendWS({ type: "cam-state", payload: { enabled: true } });
         break;
 
       case "you-were-kicked":
@@ -5245,6 +5401,13 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem('wrtc_cam_' + this.roomName);
         sessionStorage.removeItem('wrtc_start_' + this.roomName);
         sessionStorage.removeItem('wrtc_chat_' + this.roomName);
+        sessionStorage.removeItem('wrtc_hand_' + this.roomName);
+        sessionStorage.removeItem('wrtc_force_mic_' + this.roomName);
+        sessionStorage.removeItem('wrtc_force_cam_' + this.roomName);
+        sessionStorage.removeItem('wrtc_admin_mic_' + this.roomName);
+        sessionStorage.removeItem('wrtc_admin_cam_' + this.roomName);
+        sessionStorage.removeItem('wrtc_self_mic_' + this.roomName);
+        sessionStorage.removeItem('wrtc_self_cam_' + this.roomName);
         this.parentNode.innerHTML =
           '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
           + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
@@ -5258,7 +5421,7 @@ class WebRTCMeetingAPI {
 
       // ── Knock-to-join: guest is waiting for host approval ──────────────────
       case "knock-waiting": {
-        console.log('[WRTC] knock-waiting received — host_present=' + payload.host_present);
+        this._log('knock-waiting received — host_present=' + payload.host_present);
         const el = document.getElementById("wrtc-approval-text");
         if (el) el.textContent = payload.host_present
           ? "Waiting for host to admit you…"
@@ -5285,7 +5448,7 @@ class WebRTCMeetingAPI {
       // ── Knock-to-join: host sees approval request ──────────────────────────
       case "knock-request": {
         const { guestId, name: knockName } = payload;
-        console.log('[WRTC] knock-request received  guestId=' + guestId + '  name=' + knockName);
+        this._log('knock-request received  guestId=' + guestId + '  name=' + knockName);
         this._showKnockRequest(guestId, knockName);
         break;
       }
@@ -5371,11 +5534,10 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   _sendWS(msg) {
     if (this._ws?.readyState === WebSocket.OPEN) {
-      console.log('[WRTC] sendWS  type=' + msg.type + '  wsState=OPEN');
+      this._log('sendWS  type=' + msg.type);
       this._ws.send(JSON.stringify(msg));
     } else {
-      console.warn('[WRTC] sendWS DROPPED  type=' + msg.type + '  wsState=' + this._ws?.readyState);
-      this._log("WS not open — dropped " + msg.type, undefined, "warn");
+      this._log('sendWS DROPPED  type=' + msg.type + '  wsState=' + this._ws?.readyState, undefined, "warn");
     }
   }
 
@@ -5385,6 +5547,12 @@ class WebRTCMeetingAPI {
   // (camera permanently denied) are always visible as an avatar tile.
   // Safe to call multiple times — idempotent.
   _ensureRemoteTile(userId) {
+    // Skip our own stale session (race: old WS not yet cleaned up when new one arrives).
+    // User IDs are "<base-uuid>_<8-char-suffix>"; same base = same physical user.
+    if (this._myUserId) {
+      const myBase = this._myUserId.split('_')[0];
+      if (userId.split('_')[0] === myBase) return;
+    }
     if (document.getElementById(`wrtc-tile-${userId}`)) return;
     const grid = document.getElementById("wrtc-grid");
     if (!grid) return;
@@ -5860,6 +6028,13 @@ class WebRTCMeetingAPI {
     sessionStorage.removeItem('wrtc_cam_' + this.roomName);
     sessionStorage.removeItem('wrtc_start_' + this.roomName);
     sessionStorage.removeItem('wrtc_chat_' + this.roomName);
+    sessionStorage.removeItem('wrtc_hand_' + this.roomName);
+    sessionStorage.removeItem('wrtc_force_mic_' + this.roomName);
+    sessionStorage.removeItem('wrtc_force_cam_' + this.roomName);
+    sessionStorage.removeItem('wrtc_admin_mic_' + this.roomName);
+    sessionStorage.removeItem('wrtc_admin_cam_' + this.roomName);
+    sessionStorage.removeItem('wrtc_self_mic_' + this.roomName);
+    sessionStorage.removeItem('wrtc_self_cam_' + this.roomName);
     sessionStorage.removeItem('wrtc_ready_dismissed_' + this.roomName);
     this._sendWS({ type: "leave", payload: {} });
     // Close SFU producers and transports before disconnecting

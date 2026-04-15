@@ -801,8 +801,8 @@ async def signaling_endpoint(
                     "payload": {"reason": "Request timed out"},
                 })
                 await websocket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not send timeout/close to guest WebSocket  %s", e)
             return
 
         if ws_disconnected.is_set() and not approval_event.is_set():
@@ -826,8 +826,8 @@ async def signaling_endpoint(
                     "payload": {"reason": "The host declined your request to join"},
                 })
                 await websocket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not send decline/close to guest WebSocket  %s", e)
             return
 
         logger.info("Knock approved  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
@@ -944,6 +944,20 @@ async def signaling_endpoint(
                 "isHost": manager.is_host(room_id, user_id),
                 "hostId": manager.get_host(room_id),
                 "settings": {k: v for k, v in meeting_settings.items() if k != "host_user_id"},
+                # Server-authoritative forced media state for THIS participant
+                "forcedMicOff": manager.is_forced_mic_off(room_id, base_user_id),
+                "forcedCamOff": manager.is_forced_cam_off(room_id, base_user_id),
+                # Full lists for host panel (base user IDs of all force-muted participants)
+                "forcedMicUsers": manager.get_forced_mic_off(room_id),
+                "forcedCamUsers": manager.get_forced_cam_off(room_id),
+                # Self-reported cam/mic states for all participants (base_user_id → {cam, mic})
+                # Allows host panel to show correct buttons immediately after refresh
+                "participantStates": manager.get_participant_states(room_id),
+                # Bulk-mute state so host buttons restore correctly after refresh
+                "allMicsMuted": manager.is_all_mics_muted(room_id),
+                "allCamsMuted": manager.is_all_cams_muted(room_id),
+                # Raised hands — base user IDs of participants with hand currently raised
+                "raisedHands": manager.get_raised_hands(room_id),
             },
         },
     )
@@ -1085,8 +1099,8 @@ async def signaling_endpoint(
                                             },
                                         })
                                         await pending_entry["ws"].close(code=4430, reason="Room full")
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug("Could not close full-room pending WebSocket  %s", e)
                                 manager.resolve_pending(room_id, guest_id, False)
                                 continue
                         manager.resolve_pending(room_id, guest_id, approved)
@@ -1131,13 +1145,27 @@ async def signaling_endpoint(
                         "host-cam-on-user":  "you-are-force-cam-on",
                     }[msg_type]
                     if target_id and manager.is_connected(room_id, target_id):
+                        # Persist forced state by base user ID (survives participant refresh)
+                        target_base = target_id.rsplit("_", 1)[0]
+                        if msg_type == "host-mute-user":
+                            manager.set_forced_mic(room_id, target_base, True)
+                            manager.set_participant_mic(room_id, target_base, False)
+                        elif msg_type == "host-unmute-user":
+                            manager.set_forced_mic(room_id, target_base, False)
+                            manager.set_participant_mic(room_id, target_base, True)
+                        elif msg_type == "host-cam-off-user":
+                            manager.set_forced_cam(room_id, target_base, True)
+                            manager.set_participant_cam(room_id, target_base, False)
+                        elif msg_type == "host-cam-on-user":
+                            manager.set_forced_cam(room_id, target_base, False)
+                            manager.set_participant_cam(room_id, target_base, True)
                         await manager.send_personal(
                             room_id, target_id,
                             {"type": out_type, "from": user_id, "payload": {}},
                         )
                         logger.info(
-                            "Host force-control  room=%s  type=%s  target=%s  by=%s",
-                            room_id, msg_type, target_id, user_id,
+                            "Host force-control  room=%s  type=%s  target=%s  target_base=%s  by=%s",
+                            room_id, msg_type, target_id, target_base, user_id,
                         )
                 continue
 
@@ -1175,6 +1203,17 @@ async def signaling_endpoint(
             if msg_type in ("mute-all", "unmute-all", "cam-mute-all", "cam-unmute-all"):
                 if not manager.is_host(room_id, user_id):
                     continue  # silently drop — only host can send these
+                # Track bulk-mute state so host button is correct after refresh
+                if msg_type == "mute-all":
+                    manager.set_all_mics_muted(room_id, True)
+                elif msg_type == "unmute-all":
+                    manager.set_all_mics_muted(room_id, False)
+                    manager.clear_all_forced_mic(room_id)
+                elif msg_type == "cam-mute-all":
+                    manager.set_all_cams_muted(room_id, True)
+                elif msg_type == "cam-unmute-all":
+                    manager.set_all_cams_muted(room_id, False)
+                    manager.clear_all_forced_cam(room_id)
 
             # ── SFU messages ───────────────────────────────────────────────────
             if msg_type in _SFU_TYPES:
@@ -1216,6 +1255,14 @@ async def signaling_endpoint(
                 # Persist public chat for late joiners
                 if msg_type == "chat":
                     manager.add_public_message(room_id, {"from": user_id, "payload": payload})
+                # Track participant cam/mic state so admin panel is correct after refresh
+                elif msg_type == "cam-state":
+                    manager.set_participant_cam(room_id, base_user_id, bool(payload.get("enabled", True)))
+                elif msg_type == "mic-state":
+                    manager.set_participant_mic(room_id, base_user_id, bool(payload.get("enabled", True)))
+                # Track raised-hand state so it survives other participants' refreshes
+                elif msg_type == "raise-hand":
+                    manager.set_hand_raised(room_id, base_user_id, bool(payload.get("raised", False)))
 
     except Exception:
         logger.exception("Unexpected error  meeting=%s  user=%s", room_id, user_id)
@@ -1231,6 +1278,8 @@ async def signaling_endpoint(
             asyncio.create_task(_record_participant_leave(room_id, base_user_id))
 
         manager.disconnect(room_id, user_id)
+        manager.remove_participant_state(room_id, base_user_id)
+        manager.set_hand_raised(room_id, base_user_id, False)
 
         # If the room is now empty AND the host didn't just leave, end the meeting.
         # When the host leaves, the grace period below handles ending (gives time to reconnect).

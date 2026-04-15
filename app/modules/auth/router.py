@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.limiter import limiter
 from app.modules.auth.models import User
 from app.modules.auth.schemas import LoginRequest, SignupRequest, TokenResponse, UserResponse
 from app.modules.auth.service import AuthService
@@ -31,7 +33,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         409: {"description": "Email already registered"},
     },
 )
+@limiter.limit("3/minute")
 async def signup(
+    request: Request,
     payload: SignupRequest,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
@@ -75,7 +79,10 @@ async def signup(
         401: {"description": "Invalid email or password"},
     },
 )
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
+    response: Response,
     payload: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
@@ -94,10 +101,20 @@ async def login(
       "token_type": "bearer"
     }
     ```
-    Use the `access_token` as a **Bearer** token in the `Authorization` header
-    for all protected endpoints.
+    Also sets an `access_token` httpOnly cookie for dashboard session management.
+    Use the `access_token` Bearer header for SDK / API key usage.
     """
-    return await AuthService(db).login(payload)
+    token_data = await AuthService(db).login(payload)
+    response.set_cookie(
+        key="access_token",
+        value=token_data.access_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    return token_data
 
 
 @router.get(
@@ -136,3 +153,14 @@ async def get_me(current_user: User = Depends(get_current_user)) -> UserResponse
     ```
     """
     return UserResponse.model_validate(current_user)
+
+
+@router.post(
+    "/logout",
+    status_code=200,
+    summary="Clear the auth cookie (dashboard logout)",
+)
+async def logout(response: Response) -> dict:
+    """Clears the httpOnly `access_token` cookie set on login."""
+    response.delete_cookie(key="access_token", path="/", samesite="lax")
+    return {"ok": True}
