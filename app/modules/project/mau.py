@@ -51,7 +51,7 @@ PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
 # Max meeting duration in minutes (None = unlimited)
 PLAN_TIME_LIMITS: dict[str | None, int | None] = {
     None:      40,     # free  → 40 minutes
-    "basic":   960,     # basic → 40 minutes
+    "basic":   1440,     # basic → 24 hours
     "pro":     None,   # unlimited
     "premium": None,   # unlimited
 }
@@ -209,3 +209,4 @@ async def get_mau_stats(project_id: str, plan: str | None) -> dict:
         "plan": plan or "basic",
         "unlimited": limit is None,
     }
+     
