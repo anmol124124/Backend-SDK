@@ -958,6 +958,9 @@ async def signaling_endpoint(
                 "allCamsMuted": manager.is_all_cams_muted(room_id),
                 # Raised hands — base user IDs of participants with hand currently raised
                 "raisedHands": manager.get_raised_hands(room_id),
+                # Owner plan and meeting type — used by client to gate recording feature
+                "ownerPlan": owner_plan,
+                "isPublicMeeting": _is_public_meeting,
             },
         },
     )

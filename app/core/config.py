@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_PUBLISHABLE_KEY: str = ""
 
+    # ── Google Cloud Storage ─────────────────────────────────────────────
+    # GCS_ENABLED=true  → upload recordings to GCS (required in production)
+    # GCS_ENABLED=false → save recordings locally (default for local dev)
+    GCS_ENABLED: bool = False
+    GCS_BUCKET_NAME: str = ""
+    # Full service-account JSON as a single-line string (set in .env)
+    GCS_SERVICE_ACCOUNT_JSON: str = ""
+
     # ── Brevo (transactional email via SMTP) ─────────────────────────────
     BREVO_SMTP_KEY: str = ""          # SMTP password from Brevo (xsmtpsib-...)
     BREVO_SMTP_LOGIN: str = ""        # Your Brevo account email address

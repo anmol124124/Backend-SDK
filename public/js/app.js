@@ -13,8 +13,12 @@ class WebRTCMeetingAPI {
     const scriptOrigin = scriptEl ? new URL(scriptEl.src).origin : null;
 
     // Priority: script tag origin → serverUrl param → page origin
+    // If script is http://localhost but page is https:// (ngrok / production proxy),
+    // use the page origin so uploads aren't blocked as mixed content.
     if (scriptOrigin) {
-      this._httpBase = scriptOrigin;
+      const scriptIsLocalHttp = scriptOrigin.startsWith('http://localhost') || scriptOrigin.startsWith('http://127.0.0.1');
+      const pageIsHttps = window.location.protocol === 'https:';
+      this._httpBase = (scriptIsLocalHttp && pageIsHttps) ? window.location.origin : scriptOrigin;
     } else if (serverUrl) {
       this._httpBase = serverUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
     } else {
@@ -117,6 +121,8 @@ class WebRTCMeetingAPI {
     this._isReconnecting     = reconnect;
     this._meetingStart       = null;
     this._settings           = {}; // meeting permissions from server
+    this._ownerPlan          = null;   // plan of the project owner (null = free/basic)
+    this._isPublicMeeting    = false;  // true for public-meet rooms
     // WebSocket auto-reconnect state
     this._wsReconnectTimer    = null;
     this._wsReconnectAttempts = 0;
@@ -1357,6 +1363,14 @@ class WebRTCMeetingAPI {
       if (peopleBtn) peopleBtn.style.display = "none";
       if (peopleTab) peopleTab.style.display = "none";
       if (peopleContent) peopleContent.style.display = "none";
+    }
+
+    // Recording — only available to host on paid plan (basic/pro/premium), not in public meetings
+    const recMenuItem = document.getElementById("wrtc-more-rec");
+    if (recMenuItem) {
+      const planAllowsRecording = this._ownerPlan && this._ownerPlan !== 'free';
+      const canRecord = isHost && planAllowsRecording && !this._isPublicMeeting;
+      recMenuItem.style.display = canRecord ? "" : "none";
     }
   }
 
@@ -4671,10 +4685,12 @@ class WebRTCMeetingAPI {
     switch (type) {
 
       case "user-list":
-        this._myUserId   = payload.myId || null;
-        this._isHost     = payload.isHost || false;
-        this._hostUserId = payload.hostId || null;
-        this._settings   = payload.settings || {};
+        this._myUserId        = payload.myId || null;
+        this._isHost          = payload.isHost || false;
+        this._hostUserId      = payload.hostId || null;
+        this._settings        = payload.settings || {};
+        this._ownerPlan       = payload.ownerPlan ?? null;
+        this._isPublicMeeting = payload.isPublicMeeting || false;
         this._log('user-list received  room=' + this.roomName + '  myId=' + this._myUserId + '  isHost=' + this._isHost);
         // Only now is the user admitted — safe to persist name for reconnect
         sessionStorage.setItem('wrtc_name_' + this.roomName, this._myName || '');

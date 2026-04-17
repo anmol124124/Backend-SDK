@@ -33,3 +33,6 @@ stripe==10.4.0
 
 # Rate limiting
 slowapi==0.1.9
+
+# Google Cloud Storage
+google-cloud-storage==2.16.0

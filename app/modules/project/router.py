@@ -554,19 +554,24 @@ async def upload_recording(
         raise HTTPException(status_code=403, detail="Not a host token")
     project_id = _uuid_mod.UUID(raw_project_id)
 
-    recordings_dir = _PUBLIC_DIR / "recordings"
-    recordings_dir.mkdir(parents=True, exist_ok=True)
-
     ext = Path(file.filename).suffix if file.filename else ".webm"
     if not ext:
         ext = ".webm"
     filename = f"{_uuid_mod.uuid4()}{ext}"
-    file_path = recordings_dir / filename
 
     content = await file.read()
-    file_path.write_bytes(content)
 
-    url = f"{_settings.BACKEND_PUBLIC_URL}/public/recordings/{filename}"
+    if _settings.GCS_ENABLED:
+        from app.core.gcs import upload_to_gcs
+        content_type = file.content_type or "video/webm"
+        blob_name = f"recordings/{filename}"
+        url = await upload_to_gcs(content, blob_name, content_type)
+    else:
+        recordings_dir = _PUBLIC_DIR / "recordings"
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+        file_path = recordings_dir / filename
+        file_path.write_bytes(content)
+        url = f"{_settings.BACKEND_PUBLIC_URL}/public/recordings/{filename}"
 
     recording = ProjectRecording(
         id=_uuid_mod.uuid4(),
