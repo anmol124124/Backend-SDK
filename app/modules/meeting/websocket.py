@@ -528,6 +528,19 @@ async def signaling_endpoint(
     )
     project_id, owner_plan, _room_found = await get_project_and_plan(meeting_id)
     _is_public_meeting = (project_id is None and _room_found)
+
+    # Fetch allow_recording flag for project meetings
+    _allow_recording = True
+    if project_id:
+        from sqlalchemy import select as _select
+        from app.core.database import AsyncSessionLocal
+        from app.modules.project.models import Project as _Project
+        async with AsyncSessionLocal() as _db:
+            _proj = (await _db.execute(
+                _select(_Project).where(_Project.id == __import__('uuid').UUID(project_id))
+            )).scalar_one_or_none()
+            if _proj is not None:
+                _allow_recording = _proj.allow_recording
     if _is_public_meeting:
         p_limit: int | None = PUBLIC_MEETING_PARTICIPANT_LIMIT
     else:
@@ -961,6 +974,7 @@ async def signaling_endpoint(
                 # Owner plan and meeting type — used by client to gate recording feature
                 "ownerPlan": owner_plan,
                 "isPublicMeeting": _is_public_meeting,
+                "allowRecording": _allow_recording,
             },
         },
     )

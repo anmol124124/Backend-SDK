@@ -27,6 +27,8 @@ from app.modules.project.schemas import (
     ProjectCreateRequest,
     ProjectMeetingResponse,
     ProjectResponse,
+    ProjectSettingsRequest,
+    ProjectSettingsResponse,
     ScheduleInviteRequest,
     SdkJoinResponse,
 )
@@ -496,6 +498,32 @@ async def save_branding(
         logo_url=logo_url,
         theme=project.theme,
     )
+
+
+# ── Project feature settings endpoints ───────────────────────────────────────
+
+@router.get("/{project_id}/settings", response_model=ProjectSettingsResponse)
+async def get_project_settings(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectSettingsResponse:
+    project = await ProjectService.get_project(db, project_id, user.id)
+    return ProjectSettingsResponse(allow_recording=project.allow_recording)
+
+
+@router.put("/{project_id}/settings", response_model=ProjectSettingsResponse)
+async def save_project_settings(
+    project_id: UUID,
+    payload: ProjectSettingsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectSettingsResponse:
+    project = await ProjectService.get_project(db, project_id, user.id)
+    project.allow_recording = payload.allow_recording
+    await db.commit()
+    await db.refresh(project)
+    return ProjectSettingsResponse(allow_recording=project.allow_recording)
 
 
 # ── Domain allowlist endpoints ────────────────────────────────────────────────

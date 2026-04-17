@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -22,6 +22,7 @@ class Project(Base):
     button_label:    Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     welcome_message: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     theme:           Mapped[str | None] = mapped_column(String(10),  nullable=True, default=None)
+    allow_recording: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

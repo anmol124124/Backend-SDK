@@ -94,6 +94,16 @@ class BrandingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProjectSettingsRequest(BaseModel):
+    allow_recording: bool
+
+
+class ProjectSettingsResponse(BaseModel):
+    allow_recording: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DomainAddRequest(BaseModel):
     domain: str = Field(min_length=1, max_length=255)
 

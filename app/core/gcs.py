@@ -10,6 +10,7 @@ Usage:
 import asyncio
 import json
 import logging
+from datetime import timedelta
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,12 @@ async def upload_to_gcs(
         bucket = client.bucket(settings.GCS_BUCKET_NAME)
         blob = bucket.blob(blob_name)
         blob.upload_from_string(content, content_type=content_type)
-        # Make the object publicly readable
-        blob.make_public()
-        return blob.public_url
+        # Signed URL — works even when public access prevention is enforced
+        return blob.generate_signed_url(
+            expiration=timedelta(days=3650),
+            method="GET",
+            version="v2",
+        )
 
     loop = asyncio.get_running_loop()
     public_url = await loop.run_in_executor(None, _upload)
