@@ -13,12 +13,8 @@ class WebRTCMeetingAPI {
     const scriptOrigin = scriptEl ? new URL(scriptEl.src).origin : null;
 
     // Priority: script tag origin → serverUrl param → page origin
-    // If script is http://localhost but page is https:// (ngrok / production proxy),
-    // use the page origin so uploads aren't blocked as mixed content.
     if (scriptOrigin) {
-      const scriptIsLocalHttp = scriptOrigin.startsWith('http://localhost') || scriptOrigin.startsWith('http://127.0.0.1');
-      const pageIsHttps = window.location.protocol === 'https:';
-      this._httpBase = (scriptIsLocalHttp && pageIsHttps) ? window.location.origin : scriptOrigin;
+      this._httpBase = scriptOrigin;
     } else if (serverUrl) {
       this._httpBase = serverUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
     } else {
