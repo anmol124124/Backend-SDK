@@ -60,6 +60,77 @@ async def create_meeting(
     )
 
 
+# ── Public Recordings (must be before /{room_code} to avoid route shadowing) ──
+
+import uuid as _uuid
+from fastapi import UploadFile, File, Query, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import select as _select
+from app.modules.project.models import PublicRecording
+from app.core.gcs import upload_to_gcs
+from app.core.config import settings as _cfg
+import os, pathlib, datetime as _dt
+
+
+class PublicRecordingItem(BaseModel):
+    id: _uuid.UUID
+    room_code: str
+    filename: str
+    url: str
+    file_size: int | None
+    created_at: _dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.post("/recordings/upload", response_model=PublicRecordingItem, tags=["Public Recordings"])
+async def upload_public_recording(
+    room_code: str = Query(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await file.read()
+    filename = file.filename or f"recording-{_uuid.uuid4()}.webm"
+
+    if getattr(_cfg, "GCS_ENABLED", False):
+        blob_name = f"public-recordings/{current_user.id}/{filename}"
+        url = await upload_to_gcs(data, blob_name, file.content_type or "video/webm")
+    else:
+        save_dir = pathlib.Path("/app/public/recordings/public")
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path = save_dir / filename
+        save_path.write_bytes(data)
+        url = f"/public/recordings/public/{filename}"
+
+    rec = PublicRecording(
+        user_id=current_user.id,
+        room_code=room_code,
+        filename=filename,
+        url=url,
+        file_size=len(data),
+    )
+    db.add(rec)
+    await db.commit()
+    await db.refresh(rec)
+    return rec
+
+
+@router.get("/recordings", response_model=list[PublicRecordingItem], tags=["Public Recordings"])
+async def list_public_recordings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        _select(PublicRecording)
+        .where(PublicRecording.user_id == current_user.id)
+        .order_by(PublicRecording.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+# ── Parametric routes (must come after static routes above) ───────────────────
+
 @router.get("/{room_code}", response_model=MeetingInfoResponse)
 async def get_meeting(
     room_code: str,

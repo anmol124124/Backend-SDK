@@ -532,12 +532,11 @@ async def signaling_endpoint(
     # Fetch allow_recording flag for project meetings
     _allow_recording = True
     if project_id:
-        from sqlalchemy import select as _select
-        from app.core.database import AsyncSessionLocal
         from app.modules.project.models import Project as _Project
+        import uuid as _uuid
         async with AsyncSessionLocal() as _db:
             _proj = (await _db.execute(
-                _select(_Project).where(_Project.id == __import__('uuid').UUID(project_id))
+                select(_Project).where(_Project.id == _uuid.UUID(project_id))
             )).scalar_one_or_none()
             if _proj is not None:
                 _allow_recording = _proj.allow_recording

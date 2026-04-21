@@ -5,7 +5,7 @@
 if (window.WebRTCMeetingAPI) return; // already loaded — skip re-declaration
 class WebRTCMeetingAPI {
 
-  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "", branding = null, theme = null }) {
+  constructor({ serverUrl, roomName, token = "", hostToken = "", guestToken = "", shareUrl = "", embedToken = "", reconnect = false, parentNode, onLeave = null, logoUrl = "", upgradePlanUrl = "", branding = null, theme = null, recordingEndpoint = "", recordingToken = "", recordingAddonEnabled = true }) {
     // Derive backend URL from this script's own <script src> tag.
     // This makes the embed HTML portable — no hardcoded URLs needed.
     const scriptEl = Array.from(document.querySelectorAll('script[src]'))
@@ -27,8 +27,11 @@ class WebRTCMeetingAPI {
     this._hostToken  = hostToken;
     this._guestToken = guestToken;
     this._shareUrl   = shareUrl;
-    this._embedToken = embedToken;
-    this._branding   = branding || null;
+    this._embedToken        = embedToken;
+    this._recordingEndpoint     = recordingEndpoint;
+    this._recordingToken        = recordingToken;
+    this._recordingAddonEnabled = recordingAddonEnabled;
+    this._branding          = branding || null;
     this._theme      = (branding && branding.theme) || theme || null;
     // Resolve relative logo paths against the backend origin (from script tag)
     if (logoUrl && logoUrl.startsWith('/')) {
@@ -138,6 +141,11 @@ class WebRTCMeetingAPI {
     this._allCamsMuted  = false;
     this._clockTimer  = null;
     this._toastTimer  = null;
+    this._currentMicId   = null;
+    this._currentCamId   = null;
+    this._knownDeviceIds = new Set();
+    this._devToastTimer  = null;
+    this._pendingSwitch  = null;
 
     this._iceConfig = {
       iceServers: [
@@ -1311,6 +1319,7 @@ class WebRTCMeetingAPI {
     this._startQualityMonitor();
     this._initAutoHideControls();
     this._restoreChatHistory();
+    this._initDeviceWatcher();
   }
 
   _restoreChatHistory() {
@@ -1362,11 +1371,17 @@ class WebRTCMeetingAPI {
       if (peopleContent) peopleContent.style.display = "none";
     }
 
-    // Recording — only available to host on paid plan (basic/pro/premium), not in public meetings
+    // Recording — available to host when:
+    //   • project meeting: paid plan + project allows it
+    //   • public meeting: paid plan + add-on enabled + authenticated endpoint
     const recMenuItem = document.getElementById("wrtc-more-rec");
     if (recMenuItem) {
       const planAllowsRecording = this._ownerPlan && this._ownerPlan !== 'free';
-      const canRecord = isHost && planAllowsRecording && !this._isPublicMeeting && this._allowRecording;
+      const canRecord = isHost && this._allowRecording && (
+        this._isPublicMeeting
+          ? (!!this._recordingEndpoint && planAllowsRecording && this._recordingAddonEnabled)
+          : planAllowsRecording
+      );
       recMenuItem.style.display = canRecord ? "" : "none";
     }
   }
@@ -2169,6 +2184,54 @@ class WebRTCMeetingAPI {
       }
       .wrtc-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+      /* ── DEVICE SWITCHER ── */
+      .wrtc-dev-group{display:flex;align-items:stretch;position:relative;}
+      .wrtc-dev-group>.wrtc-btn{border-radius:12px 0 0 12px;}
+      .wrtc-dev-chevron{
+        display:flex;align-items:center;justify-content:center;
+        width:20px;min-width:20px;
+        background:rgba(255,255,255,.06);border:none;
+        border-left:1px solid rgba(255,255,255,.1);
+        border-radius:0 12px 12px 0;
+        cursor:pointer;color:#e8eaed;transition:background .12s;padding:0;
+      }
+      .wrtc-dev-chevron:hover{background:rgba(255,255,255,.14);}
+      .wrtc-dev-menu{
+        position:fixed;
+        background:#1e2024;border:1px solid rgba(255,255,255,.13);border-radius:12px;
+        padding:6px;z-index:50;min-width:220px;
+        box-shadow:0 8px 32px rgba(0,0,0,.55);
+        display:flex;flex-direction:column;gap:2px;
+      }
+      .wrtc-dev-item{
+        display:flex;align-items:center;gap:10px;padding:10px 14px;
+        border-radius:8px;cursor:pointer;color:#e8eaed;font-size:13.5px;
+        transition:background .12s;
+      }
+      .wrtc-dev-item:hover{background:rgba(255,255,255,.08);}
+      .wrtc-dev-item.active{color:#8ab4f8;}
+      .wrtc-dev-item-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+      .wrtc-dev-toast{
+        position:absolute;bottom:88px;left:50%;
+        transform:translateX(-50%) translateY(12px);
+        background:#3c4043;color:#e8eaed;
+        font-size:13px;padding:8px 14px;border-radius:10px;
+        box-shadow:0 4px 16px rgba(0,0,0,.5);
+        z-index:55;opacity:0;transition:opacity .2s,transform .2s;
+        display:flex;align-items:center;gap:10px;
+        white-space:nowrap;pointer-events:none;
+      }
+      .wrtc-dev-toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;}
+      .wrtc-dev-toast-btn{
+        background:#8ab4f8;color:#202124;border:none;border-radius:6px;
+        padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;
+      }
+      .wrtc-dev-toast-btn:hover{background:#aac8fb;}
+      .wrtc-dev-toast-dismiss{
+        background:none;border:none;color:#9aa0a6;cursor:pointer;font-size:16px;padding:0 2px;
+      }
+      .wrtc-dev-toast-dismiss:hover{color:#e8eaed;}
+
       /* ── INVITE MODAL ── */
       .wrtc-invite-overlay{
         position:fixed;inset:0;z-index:200;
@@ -2443,29 +2506,39 @@ class WebRTCMeetingAPI {
       <div class="wrtc-controls" id="wrtc-controls">
 
         <!-- Mic -->
-        <button class="wrtc-btn" id="wrtc-btn-mic" title="Mute / Unmute">
-          <span class="wrtc-mic-inner">
-            <div class="wrtc-vol-liquid" id="wrtc-vol-liquid"></div>
-            <svg id="wrtc-ico-mic" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-            </svg>
-            <svg id="wrtc-ico-mic-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-              <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
-            </svg>
-          </span>
-          <span class="wrtc-btn-label" id="wrtc-lbl-mic">Mic</span>
-        </button>
+        <div class="wrtc-dev-group">
+          <button class="wrtc-btn" id="wrtc-btn-mic" title="Mute / Unmute">
+            <span class="wrtc-mic-inner">
+              <div class="wrtc-vol-liquid" id="wrtc-vol-liquid"></div>
+              <svg id="wrtc-ico-mic" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+              <svg id="wrtc-ico-mic-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+                <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
+              </svg>
+            </span>
+            <span class="wrtc-btn-label" id="wrtc-lbl-mic">Mic</span>
+          </button>
+          <button class="wrtc-dev-chevron" id="wrtc-chev-mic" title="Select microphone">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+        </div>
 
         <!-- Camera -->
-        <button class="wrtc-btn" id="wrtc-btn-cam" title="Stop / Start Video">
-          <svg id="wrtc-ico-cam" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
-          </svg>
-          <svg id="wrtc-ico-cam-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-            <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
-          </svg>
-          <span class="wrtc-btn-label" id="wrtc-lbl-cam">Camera</span>
-        </button>
+        <div class="wrtc-dev-group">
+          <button class="wrtc-btn" id="wrtc-btn-cam" title="Stop / Start Video">
+            <svg id="wrtc-ico-cam" width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+            </svg>
+            <svg id="wrtc-ico-cam-off" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+              <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
+            </svg>
+            <span class="wrtc-btn-label" id="wrtc-lbl-cam">Camera</span>
+          </button>
+          <button class="wrtc-dev-chevron" id="wrtc-chev-cam" title="Select camera">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+        </div>
 
         <div class="wrtc-divider"></div>
 
@@ -2592,6 +2665,15 @@ class WebRTCMeetingAPI {
         </div>
       </div>
 
+      <div class="wrtc-dev-menu" id="wrtc-dev-menu-mic" style="display:none"></div>
+      <div class="wrtc-dev-menu" id="wrtc-dev-menu-cam" style="display:none"></div>
+
+      <div class="wrtc-dev-toast" id="wrtc-dev-toast">
+        <span id="wrtc-dev-toast-msg"></span>
+        <button class="wrtc-dev-toast-btn" id="wrtc-dev-toast-btn">Switch</button>
+        <button class="wrtc-dev-toast-dismiss" id="wrtc-dev-toast-dismiss">✕</button>
+      </div>
+
       <div class="wrtc-toast" id="wrtc-toast"></div>
 
     </div>`;
@@ -2703,7 +2785,11 @@ class WebRTCMeetingAPI {
     });
     document.getElementById("wrtc-more-rec").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
-      this._toggleRecording();
+      if (this._isRecording) {
+        this._stopRecording();
+      } else {
+        this._showRecordingModal();
+      }
     });
     document.getElementById("wrtc-more-people").addEventListener("click", () => {
       document.getElementById("wrtc-more-menu").style.display = "none";
@@ -2950,22 +3036,13 @@ class WebRTCMeetingAPI {
         }
       }
 
-      if (wasOn && !this._camEnabled) {
-        this._localStream?.getVideoTracks().forEach(t => { t.enabled = true; });
-        this._camEnabled = true;
-        document.getElementById("wrtc-btn-cam").classList.remove("muted");
-        document.getElementById("wrtc-ico-cam").style.display     = "";
-        document.getElementById("wrtc-ico-cam-off").style.display = "none";
-        document.getElementById("wrtc-pip-avatar").style.display  = "none";
-        this._sendWS({ type: "cam-state", payload: { enabled: true } });
-      }
+      // Camera state is unchanged during screen share — no restore needed.
 
       try { await this._restoreCameraTrack(); } catch (_) {}
       try { this._renegotiateAll(); } catch (_) {}
 
       document.getElementById("wrtc-more-share").classList.remove("on-air");
       document.getElementById("wrtc-more-share-label").textContent = "Share Screen";
-      document.getElementById("wrtc-btn-cam").style.display = "";
 
       this._presenterUserId = null;
       this._clearPresenter();
@@ -2993,20 +3070,29 @@ class WebRTCMeetingAPI {
         this._renegotiateAll(); // renegotiate so peers get updated SDP for screen track
         document.getElementById("wrtc-more-share").classList.add("on-air");
         document.getElementById("wrtc-more-share-label").textContent = "Stop Sharing";
-        // Hide cam button while screen sharing
-        document.getElementById("wrtc-btn-cam").style.display = "none";
-        // Disable camera so participants only see the shared screen, not the webcam.
-        // Save current cam state so we can restore it when sharing stops.
         this._camEnabledBeforeShare = this._camEnabled;
+
+        // Some browsers end the camera track when getDisplayMedia is called.
+        // Restart the camera so the thumbnail strip shows a live feed.
         if (this._camEnabled) {
-          this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
-          this._camEnabled = false;
-          document.getElementById("wrtc-btn-cam").classList.add("muted");
-          document.getElementById("wrtc-ico-cam").style.display     = "none";
-          document.getElementById("wrtc-ico-cam-off").style.display = "";
-          document.getElementById("wrtc-pip-avatar").style.display  = "flex";
-          this._sendWS({ type: "cam-state", payload: { enabled: false } });
+          const _camTrack = this._localStream?.getVideoTracks()[0];
+          if (!_camTrack || _camTrack.readyState === 'ended') {
+            try {
+              const newCam = await navigator.mediaDevices.getUserMedia({ video: true });
+              const newTrack = newCam.getVideoTracks()[0];
+              if (newTrack && this._localStream) {
+                if (_camTrack) { try { this._localStream.removeTrack(_camTrack); } catch (_) {} }
+                this._localStream.addTrack(newTrack);
+              } else if (newTrack) {
+                this._localStream = newCam;
+              }
+              // Re-point local video element to refreshed stream
+              const _lv = document.getElementById("wrtc-local-video");
+              if (_lv) { _lv.srcObject = null; _lv.srcObject = this._localStream; _lv.play().catch(() => {}); }
+            } catch (_e) { this._log('Camera restart on share failed: ' + _e.message, undefined, 'warn'); }
+          }
         }
+
         this._setLocalPresenter();
         // Delay the "presenting" signal so remote peers receive the first
         // screen keyframe before they expand the tile (avoids blank/camera flash)
@@ -3112,14 +3198,17 @@ class WebRTCMeetingAPI {
     tile.append(video, badge, label);
     grid.appendChild(tile);
 
-    // Move only REMOTE tiles to the thumbnail strip — the presenter does not
-    // need to see their own tile; only other participants appear on the right.
+    // Move remote tiles to the thumbnail strip
     document.querySelectorAll(".wrtc-tile:not(#wrtc-local-share-tile):not(#wrtc-local-tile)").forEach(t => {
       this._addThumb(t, thumbs);
       t.style.display = "none";
     });
-    // Hide the local tile entirely during screen share
-    document.getElementById("wrtc-local-tile").style.display = "none";
+    // Also show local camera in the thumbnail strip so host sees their own cam
+    const localTile = document.getElementById("wrtc-local-tile");
+    if (localTile && this._camEnabled) {
+      this._addThumb(localTile, thumbs);
+    }
+    localTile.style.display = "none";
     thumbs.style.display = "flex";
   }
 
@@ -3242,76 +3331,351 @@ class WebRTCMeetingAPI {
   // ═══════════════════════════════════════════════════════════════════════
   // RECORDING
   // ═══════════════════════════════════════════════════════════════════════
-  async _toggleRecording() {
-    if (this._isRecording) {
-      this._mediaRecorder?.stop();
-      this._isRecording = false;
-      this._recordTabStream?.getTracks().forEach(t => t.stop());
-      this._recordTabStream = null;
-      this._recordAudioCtx?.close();
-      this._recordAudioCtx = null;
-      document.getElementById("wrtc-more-rec").classList.remove("on-air");
-      document.getElementById("wrtc-more-rec-label").textContent = "Record";
-      document.getElementById("wrtc-rec-badge").classList.remove("active");
-      document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
-      this._toast("Recording saved");
-    } else {
-      try {
-        const tabStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: 30 },
-          audio: true,
+  // ── Recording mode modal ────────────────────────────────────────────────────
+
+  _showRecordingModal() {
+    const screenActive = this._isSharing && this._shareStream;
+    const overlay = document.createElement("div");
+    overlay.id = "wrtc-rec-modal-overlay";
+    overlay.style.cssText = [
+      "position:fixed;inset:0;z-index:9999",
+      "background:rgba(0,0,0,.65)",
+      "display:flex;align-items:center;justify-content:center",
+    ].join(";");
+
+    const modes = screenActive
+      ? [
+          { id: "screen-only",  icon: "🖥️",   title: "Record Shared Screen",        desc: "Records only the shared screen and your mic audio." },
+          { id: "screen-host",  icon: "🖥️👤",  title: "Screen + Host Camera",        desc: "Shared screen fullscreen with your webcam in the corner." },
+          { id: "everything",   icon: "🎬",   title: "Record Everything",           desc: "All video tiles and all audio mixed together." },
+        ]
+      : [
+          { id: "host-only",    icon: "👤",   title: "Record Host Only",            desc: "Captures your webcam and microphone." },
+          { id: "everything",   icon: "🎬",   title: "Record All Participants",     desc: "All video tiles and all audio mixed together." },
+        ];
+
+    const cards = modes.map(m => `
+      <div data-mode="${m.id}" style="
+        flex:1;min-width:160px;max-width:220px;cursor:pointer;border-radius:14px;
+        border:2px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);
+        padding:22px 18px;display:flex;flex-direction:column;align-items:center;
+        gap:10px;transition:border-color .15s,background .15s;text-align:center;
+      " onmouseover="this.style.borderColor='#6c63ff';this.style.background='rgba(108,99,255,.15)'"
+         onmouseout="this.style.borderColor='rgba(255,255,255,.12)';this.style.background='rgba(255,255,255,.05)'">
+        <span style="font-size:28px">${m.icon}</span>
+        <span style="font-size:13px;font-weight:700;color:#e8eaed">${m.title}</span>
+        <span style="font-size:11px;color:#9aa0a6;line-height:1.5">${m.desc}</span>
+      </div>`).join("");
+
+    overlay.innerHTML = `
+      <div style="background:#1e2029;border:1px solid rgba(255,255,255,.1);border-radius:18px;
+                  padding:28px 32px;max-width:720px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,.6)">
+        <div style="font-size:18px;font-weight:700;color:#e8eaed;margin-bottom:6px">Choose Recording Mode</div>
+        <div style="font-size:13px;color:#9aa0a6;margin-bottom:22px">
+          ${screenActive ? "Screen sharing is active." : "No screen share active."}
+          Select what to record.
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">${cards}</div>
+        <div style="margin-top:20px;text-align:right">
+          <button id="wrtc-rec-cancel" style="padding:9px 22px;background:transparent;border:1px solid rgba(255,255,255,.2);
+            border-radius:8px;color:#9aa0a6;font-size:13px;cursor:pointer">Cancel</button>
+        </div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+
+    overlay.querySelectorAll("[data-mode]").forEach(el => {
+      el.addEventListener("click", () => {
+        document.body.removeChild(overlay);
+        this._startRecording(el.dataset.mode);
+      });
+    });
+    document.getElementById("wrtc-rec-cancel").addEventListener("click", () => document.body.removeChild(overlay));
+    overlay.addEventListener("click", e => { if (e.target === overlay) document.body.removeChild(overlay); });
+  }
+
+  // ── Canvas compositor helper ─────────────────────────────────────────────────
+
+  _buildCanvasStream(videoEls, w = 1280, h = 720) {
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx    = canvas.getContext("2d");
+    const count  = videoEls.length;
+    // First element is screen share when screen is active (set by _getAllVideoEls ordering)
+    const hasScreen = this._isSharing && count > 0;
+
+    const draw = () => {
+      ctx.fillStyle = "#0f1117";
+      ctx.fillRect(0, 0, w, h);
+      if (!count) return;
+
+      if (count === 1) {
+        if (videoEls[0].readyState >= 2) ctx.drawImage(videoEls[0], 0, 0, w, h);
+      } else if (hasScreen && count >= 2) {
+        // Screen takes left 70%, cameras stack in right 30%
+        const screenW = Math.floor(w * 0.70);
+        const sideW   = w - screenW;
+        const cams    = videoEls.slice(1);
+        const camH    = Math.floor(h / cams.length);
+
+        if (videoEls[0].readyState >= 2) ctx.drawImage(videoEls[0], 0, 0, screenW, h);
+
+        // Divider line
+        ctx.fillStyle = "#000";
+        ctx.fillRect(screenW, 0, 2, h);
+
+        cams.forEach((v, i) => {
+          if (v.readyState >= 2) ctx.drawImage(v, screenW + 2, i * camH, sideW - 2, camH);
+          // Separator between cams
+          if (i > 0) { ctx.fillStyle = "#000"; ctx.fillRect(screenW + 2, i * camH, sideW - 2, 1); }
         });
-        this._recordTabStream = tabStream;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const dest = audioCtx.createMediaStreamDestination();
-        if (tabStream.getAudioTracks().length)
-          audioCtx.createMediaStreamSource(tabStream).connect(dest);
-        if (this._localStream?.getAudioTracks().length)
-          audioCtx.createMediaStreamSource(this._localStream).connect(dest);
-        this._recordAudioCtx = audioCtx;
-        const combined = new MediaStream([
-          ...tabStream.getVideoTracks(),
-          ...dest.stream.getAudioTracks(),
-        ]);
-        const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"]
-          .find(t => MediaRecorder.isTypeSupported(t)) || "";
-        this._recordChunks  = [];
-        this._mediaRecorder = new MediaRecorder(combined, mimeType ? { mimeType } : {});
-        this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
-        this._mediaRecorder.onstop = () => {
-          const blob = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
-          const embedToken = this._embedTokenSaved || '';
-          const roomName   = this.roomName || '';
-          if (embedToken) {
-            const form = new FormData();
-            form.append('file', blob, `recording-${Date.now()}.webm`);
-            fetch(
-              this._httpBase + '/api/v1/projects/recordings/upload'
-              + '?embed_token=' + encodeURIComponent(embedToken)
-              + '&room_name='   + encodeURIComponent(roomName),
-              { method: 'POST', body: form }
-            )
-              .then(r => r.ok ? this._toast('Recording saved to dashboard') : this._toast('Recording upload failed'))
-              .catch(() => this._toast('Recording upload failed'));
-          } else {
-            const url = URL.createObjectURL(blob);
-            Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` }).click();
-            URL.revokeObjectURL(url);
-          }
-        };
-        tabStream.getVideoTracks()[0].onended = () => { if (this._isRecording) this._toggleRecording(); };
-        this._mediaRecorder.start(1000);
-        this._isRecording = true;
-        document.getElementById("wrtc-more-rec").classList.add("on-air");
-        document.getElementById("wrtc-more-rec-label").textContent = "Stop Recording";
-        document.getElementById("wrtc-rec-badge").classList.add("active");
-        document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
-        this._toast("Recording started — select this tab to capture everything");
-      } catch (err) {
-        if (err.name !== "NotAllowedError") this._toast("Recording failed: " + err.message);
-        this._log("Recording error: " + err.message, undefined, "error");
+      } else {
+        // Equal grid for cameras only
+        const cols = count <= 2 ? 2 : count <= 4 ? 2 : 3;
+        const rows = Math.ceil(count / cols);
+        const tw   = Math.floor(w / cols);
+        const th   = Math.floor(h / rows);
+        videoEls.forEach((v, i) => {
+          if (v.readyState < 2) return;
+          ctx.drawImage(v, (i % cols) * tw, Math.floor(i / cols) * th, tw, th);
+        });
+      }
+    };
+
+    let rafId;
+    const loop = () => { draw(); rafId = requestAnimationFrame(loop); };
+    loop();
+    const stream = canvas.captureStream(30);
+    stream._stopCanvas = () => cancelAnimationFrame(rafId);
+    return stream;
+  }
+
+  _buildPipStream(screenVid, hostVid, w = 1280, h = 720) {
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    const pipW = Math.floor(w * 0.25), pipH = Math.floor(h * 0.25);
+    const pipX = w - pipW - 16, pipY = h - pipH - 16;
+
+    function draw() {
+      ctx.fillStyle = "#0f1117";
+      ctx.fillRect(0, 0, w, h);
+      if (screenVid.readyState >= 2) ctx.drawImage(screenVid, 0, 0, w, h);
+      if (hostVid && hostVid.readyState >= 2) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(pipX, pipY, pipW, pipH, 8);
+        ctx.clip();
+        ctx.drawImage(hostVid, pipX, pipY, pipW, pipH);
+        ctx.restore();
+        ctx.strokeStyle = "rgba(255,255,255,.4)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(pipX, pipY, pipW, pipH, 8);
+        ctx.stroke();
       }
     }
+
+    let rafId;
+    function loop() { draw(); rafId = requestAnimationFrame(loop); }
+    loop();
+    const stream = canvas.captureStream(30);
+    stream._stopCanvas = () => cancelAnimationFrame(rafId);
+    return stream;
+  }
+
+  _mixAudioStreams(streams) {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioCtx.createMediaStreamDestination();
+    streams.forEach(s => {
+      if (s && s.getAudioTracks().length) {
+        audioCtx.createMediaStreamSource(s).connect(dest);
+      }
+    });
+    return { audioCtx, audioStream: dest.stream };
+  }
+
+  _getAllVideoEls() {
+    const seen = new Set();
+    const els  = [];
+    const add  = v => {
+      if (!v?.srcObject) return;
+      const id = v.srcObject.id;
+      if (seen.has(id)) return;
+      seen.add(id); els.push(v);
+    };
+    // Screen share tile first (so it's the dominant tile in grid layout)
+    if (this._isSharing) {
+      add(document.getElementById("wrtc-local-share-tile")?.querySelector("video"));
+    }
+    // Local camera
+    add(document.getElementById("wrtc-local-video"));
+    // Remote tiles (may be hidden during screen share but still in DOM)
+    document.querySelectorAll(".wrtc-tile:not(#wrtc-local-tile):not(#wrtc-local-share-tile) video").forEach(add);
+    return els;
+  }
+
+  _getAllAudioStreams() {
+    const seen    = new Set();
+    const streams = [];
+    const add = s => {
+      if (!s || seen.has(s.id)) return;
+      seen.add(s.id); streams.push(s);
+    };
+    if (this._isSharing && this._shareStream) add(this._shareStream);
+    if (this._localStream) add(this._localStream);
+    document.querySelectorAll(".wrtc-tile:not(#wrtc-local-tile):not(#wrtc-local-share-tile) video").forEach(v => {
+      if (v.srcObject) add(v.srcObject);
+    });
+    return streams;
+  }
+
+  // ── Start recording with chosen mode ────────────────────────────────────────
+
+  async _startRecording(mode) {
+    let combinedStream = null;
+    let audioCtx       = null;
+    let canvasStream   = null;
+    const offscreenEls = [];
+
+    // Helper: create an off-screen video element playing a stream, await readiness
+    const makeOffscreen = async stream => {
+      const el = document.createElement("video");
+      el.srcObject   = stream;
+      el.muted       = true;
+      el.autoplay    = true;
+      el.playsInline = true;
+      el.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none";
+      document.body.appendChild(el);
+      offscreenEls.push(el);
+      await el.play().catch(() => {});
+      await new Promise(r => setTimeout(r, 80)); // let readyState update
+      return el;
+    };
+
+    const cleanup = () => {
+      canvasStream?._stopCanvas?.();
+      try { audioCtx?.close(); } catch (_) {}
+      offscreenEls.forEach(el => { el.srcObject = null; try { document.body.removeChild(el); } catch (_) {} });
+    };
+
+    try {
+      const mimeType = ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm","video/mp4"]
+        .find(t => MediaRecorder.isTypeSupported(t)) || "";
+
+      if (mode === "screen-only") {
+        if (!this._shareStream) { this._toast("Start screen sharing first"); return; }
+        // Screen video tracks + mic audio tracks — no canvas, no compositing
+        const screenVideoTracks = this._shareStream.getVideoTracks();
+        const micAudioTracks    = (this._localStream?.getAudioTracks() || []).filter(t => t.readyState === "live");
+        // Also include any system/tab audio the user chose to share
+        const screenAudioTracks = this._shareStream.getAudioTracks();
+        combinedStream = new MediaStream([...screenVideoTracks, ...screenAudioTracks, ...micAudioTracks]);
+
+      } else if (mode === "screen-host") {
+        if (!this._shareStream) { this._toast("Start screen sharing first"); return; }
+        if (!this._camEnabled)  { this._toast("Turn on your camera first"); return; }
+        const screenEl = await makeOffscreen(this._shareStream);
+        const camEl    = await makeOffscreen(this._localStream);
+        canvasStream   = this._buildPipStream(screenEl, camEl);
+        const { audioCtx: ac, audioStream } = this._mixAudioStreams(
+          [this._shareStream, this._localStream].filter(Boolean)
+        );
+        audioCtx = ac;
+        combinedStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...audioStream.getAudioTracks(),
+        ]);
+
+      } else if (mode === "host-only") {
+        if (!this._localStream) { this._toast("No camera/mic available"); return; }
+        const tracks = [
+          ...this._localStream.getVideoTracks().filter(t => t.readyState === "live"),
+          ...this._localStream.getAudioTracks().filter(t => t.readyState === "live"),
+        ];
+        if (!tracks.length) { this._toast("Camera and mic are not active"); return; }
+        combinedStream = new MediaStream(tracks);
+
+      } else if (mode === "everything") {
+        const videoEls = this._getAllVideoEls();
+        if (!videoEls.length) { this._toast("No video sources available"); return; }
+        canvasStream = this._buildCanvasStream(videoEls);
+        const { audioCtx: ac, audioStream } = this._mixAudioStreams(this._getAllAudioStreams());
+        audioCtx = ac;
+        combinedStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...audioStream.getAudioTracks(),
+        ]);
+      }
+
+      if (!combinedStream) return;
+
+      this._recordChunks  = [];
+      this._recordCleanup = cleanup;
+
+      this._mediaRecorder = new MediaRecorder(combinedStream, mimeType ? { mimeType } : {});
+      this._mediaRecorder.ondataavailable = e => { if (e.data.size > 0) this._recordChunks.push(e.data); };
+      this._mediaRecorder.onstop = () => {
+        this._recordCleanup?.();
+        this._recordCleanup = null;
+        const blob       = new Blob(this._recordChunks, { type: mimeType || "video/webm" });
+        const embedToken = this._embedTokenSaved || '';
+        const roomName   = this.roomName || '';
+        const fname      = `recording-${Date.now()}.webm`;
+        if (this._recordingEndpoint && this._recordingToken) {
+          // Public-meet: upload to dedicated public recordings endpoint
+          const form = new FormData();
+          form.append('file', blob, fname);
+          fetch(
+            this._recordingEndpoint + '?room_code=' + encodeURIComponent(roomName),
+            { method: 'POST', headers: { Authorization: `Bearer ${this._recordingToken}` }, body: form }
+          )
+            .then(r => r.ok ? this._toast('Recording saved to your dashboard') : this._toast('Recording upload failed'))
+            .catch(() => this._toast('Recording upload failed'));
+        } else if (embedToken) {
+          const form = new FormData();
+          form.append('file', blob, fname);
+          fetch(
+            this._httpBase + '/api/v1/projects/recordings/upload'
+            + '?embed_token=' + encodeURIComponent(embedToken)
+            + '&room_name='   + encodeURIComponent(roomName),
+            { method: 'POST', body: form }
+          )
+            .then(r => r.ok ? this._toast('Recording saved to dashboard') : this._toast('Recording upload failed'))
+            .catch(() => this._toast('Recording upload failed'));
+        } else {
+          const url = URL.createObjectURL(blob);
+          Object.assign(document.createElement("a"), { href: url, download: `meeting-${Date.now()}.webm` }).click();
+          URL.revokeObjectURL(url);
+        }
+      };
+
+      this._mediaRecorder.start(1000);
+      this._isRecording  = true;
+      this._recordingMode = mode;
+      document.getElementById("wrtc-more-rec").classList.add("on-air");
+      document.getElementById("wrtc-more-rec-label").textContent = "Stop Recording";
+      document.getElementById("wrtc-rec-badge").classList.add("active");
+      document.getElementById("wrtc-rec-circle").setAttribute("fill", "#fff");
+      this._toast("Recording started");
+
+    } catch (err) {
+      cleanup();
+      if (err.name !== "NotAllowedError") this._toast("Recording failed: " + err.message);
+      this._log("Recording error: " + err.message, undefined, "error");
+    }
+  }
+
+  _stopRecording() {
+    this._mediaRecorder?.stop();
+    this._isRecording   = false;
+    this._recordingMode = null;
+    this._recordTabStream?.getTracks().forEach(t => t.stop());
+    this._recordTabStream = null;
+    document.getElementById("wrtc-more-rec").classList.remove("on-air");
+    document.getElementById("wrtc-more-rec-label").textContent = "Record";
+    document.getElementById("wrtc-rec-badge").classList.remove("active");
+    document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -4115,6 +4479,176 @@ class WebRTCMeetingAPI {
     el.classList.add("show");
     clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => el.classList.remove("show"), 7000);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DEVICE SWITCHER
+  // ═══════════════════════════════════════════════════════════════════════
+  async _initDeviceWatcher() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      devices.forEach(d => this._knownDeviceIds.add(d.deviceId));
+      const audioTrack = this._localStream?.getAudioTracks()[0];
+      const videoTrack = this._localStream?.getVideoTracks()[0];
+      this._currentMicId = audioTrack?.getSettings()?.deviceId || null;
+      this._currentCamId = videoTrack?.getSettings()?.deviceId || null;
+    } catch(_) {}
+
+    navigator.mediaDevices.addEventListener('devicechange', () => this._onDeviceChange());
+
+    document.getElementById('wrtc-chev-mic')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._toggleDeviceMenu('mic');
+    });
+    document.getElementById('wrtc-chev-cam')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._toggleDeviceMenu('cam');
+    });
+    document.getElementById('wrtc-dev-toast-dismiss')?.addEventListener('click', () => this._hideDevToast());
+    document.getElementById('wrtc-dev-toast-btn')?.addEventListener('click', () => {
+      if (this._pendingSwitch) {
+        const { kind, deviceId } = this._pendingSwitch;
+        if (kind === 'audioinput') this._switchMic(deviceId);
+        else this._switchCam(deviceId);
+      }
+      this._hideDevToast();
+    });
+    document.addEventListener('click', () => this._closeDeviceMenus());
+  }
+
+  async _onDeviceChange() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const newDevices = devices.filter(d =>
+        d.deviceId !== 'default' && d.deviceId !== 'communications' &&
+        !this._knownDeviceIds.has(d.deviceId) &&
+        (d.kind === 'audioinput' || d.kind === 'videoinput')
+      );
+      this._knownDeviceIds = new Set(devices.map(d => d.deviceId));
+      if (newDevices.length > 0) {
+        const dev = newDevices[0];
+        const typeLabel = dev.kind === 'audioinput' ? 'microphone' : 'camera';
+        const devName = dev.label || `New ${typeLabel}`;
+        this._pendingSwitch = { kind: dev.kind, deviceId: dev.deviceId };
+        this._showDevToast(`New ${typeLabel} connected: ${devName}`);
+      }
+    } catch(_) {}
+  }
+
+  _showDevToast(msg) {
+    const toast = document.getElementById('wrtc-dev-toast');
+    const msgEl = document.getElementById('wrtc-dev-toast-msg');
+    if (!toast || !msgEl) return;
+    msgEl.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(this._devToastTimer);
+    this._devToastTimer = setTimeout(() => this._hideDevToast(), 8000);
+  }
+
+  _hideDevToast() {
+    document.getElementById('wrtc-dev-toast')?.classList.remove('show');
+    clearTimeout(this._devToastTimer);
+    this._pendingSwitch = null;
+  }
+
+  async _toggleDeviceMenu(kind) {
+    const menuId = kind === 'mic' ? 'wrtc-dev-menu-mic' : 'wrtc-dev-menu-cam';
+    const chevId = kind === 'mic' ? 'wrtc-chev-mic' : 'wrtc-chev-cam';
+    const menu = document.getElementById(menuId);
+    if (!menu) return;
+    const isOpen = menu.style.display !== 'none';
+    this._closeDeviceMenus();
+    if (!isOpen) {
+      await this._buildDeviceMenu(kind);
+      menu.style.display = 'flex';
+      const chev = document.getElementById(chevId);
+      if (chev) {
+        const rect = chev.getBoundingClientRect();
+        menu.style.left = Math.max(8, rect.left - menu.offsetWidth + rect.width) + 'px';
+        menu.style.top = (rect.top - menu.offsetHeight - 8) + 'px';
+      }
+    }
+  }
+
+  _closeDeviceMenus() {
+    const mic = document.getElementById('wrtc-dev-menu-mic');
+    const cam = document.getElementById('wrtc-dev-menu-cam');
+    if (mic) mic.style.display = 'none';
+    if (cam) cam.style.display = 'none';
+  }
+
+  async _buildDeviceMenu(kind) {
+    const deviceKind = kind === 'mic' ? 'audioinput' : 'videoinput';
+    const menuId = kind === 'mic' ? 'wrtc-dev-menu-mic' : 'wrtc-dev-menu-cam';
+    const menu = document.getElementById(menuId);
+    if (!menu) return;
+    menu.innerHTML = '';
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const filtered = devices.filter(d => d.kind === deviceKind && d.deviceId !== 'default' && d.deviceId !== 'communications');
+      const currentId = kind === 'mic' ? this._currentMicId : this._currentCamId;
+      if (filtered.length === 0) {
+        menu.innerHTML = '<div class="wrtc-dev-item" style="opacity:.5;cursor:default">No devices found</div>';
+        return;
+      }
+      filtered.forEach(dev => {
+        const item = document.createElement('div');
+        item.className = 'wrtc-dev-item' + (dev.deviceId === currentId ? ' active' : '');
+        const check = dev.deviceId === currentId
+          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
+          : '<span style="width:16px;display:inline-block"></span>';
+        item.innerHTML = `${check}<span class="wrtc-dev-item-label">${dev.label || (kind === 'mic' ? 'Microphone' : 'Camera')}</span>`;
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (kind === 'mic') this._switchMic(dev.deviceId);
+          else this._switchCam(dev.deviceId);
+          this._closeDeviceMenus();
+        });
+        menu.appendChild(item);
+      });
+    } catch(_) {
+      menu.innerHTML = '<div class="wrtc-dev-item" style="opacity:.5;cursor:default">Unable to list devices</div>';
+    }
+  }
+
+  async _switchMic(deviceId) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+      const newTrack = stream.getAudioTracks()[0];
+      Object.values(this._peerConnections).forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+      const oldTrack = this._localStream?.getAudioTracks()[0];
+      if (oldTrack) { this._localStream.removeTrack(oldTrack); oldTrack.stop(); }
+      this._localStream?.addTrack(newTrack);
+      this._currentMicId = deviceId;
+      this._toast('Microphone switched');
+    } catch(e) {
+      this._toast('Failed to switch microphone');
+      console.error('[DevSwitch] mic:', e);
+    }
+  }
+
+  async _switchCam(deviceId) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: deviceId } } });
+      const newTrack = stream.getVideoTracks()[0];
+      Object.values(this._peerConnections).forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+      const oldTrack = this._localStream?.getVideoTracks()[0];
+      if (oldTrack) { this._localStream.removeTrack(oldTrack); oldTrack.stop(); }
+      this._localStream?.addTrack(newTrack);
+      const localVid = document.getElementById('wrtc-local-video');
+      if (localVid) localVid.srcObject = this._localStream;
+      this._currentCamId = deviceId;
+      this._toast('Camera switched');
+    } catch(e) {
+      this._toast('Failed to switch camera');
+      console.error('[DevSwitch] cam:', e);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -6060,7 +6594,7 @@ class WebRTCMeetingAPI {
     this._ws?.close();
     this._localStream?.getTracks().forEach(t => t.stop());
     this._shareStream?.getTracks().forEach(t => t.stop());
-    if (this._isRecording) this._mediaRecorder?.stop();
+    if (this._isRecording) this._stopRecording();
     clearInterval(this._clockTimer);
     clearInterval(this._qualityInterval);
     if (this._speakerRafId) { cancelAnimationFrame(this._speakerRafId); this._speakerRafId = null; }

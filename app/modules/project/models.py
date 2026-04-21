@@ -104,6 +104,23 @@ class ProjectDomain(Base):
     )
 
 
+class PublicRecording(Base):
+    """Recordings from public meetings (non-project, owner-authenticated)."""
+    __tablename__ = "public_recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    room_code: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    file_size: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
 class ProjectMAU(Base):
     """Monthly Active Users per project — one row per unique browser UUID per month."""
     __tablename__ = "project_mau"
