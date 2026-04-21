@@ -141,8 +141,9 @@ class WebRTCMeetingAPI {
     this._allCamsMuted  = false;
     this._clockTimer  = null;
     this._toastTimer  = null;
-    this._currentMicId   = null;
-    this._currentCamId   = null;
+    this._currentMicId     = null;
+    this._currentCamId     = null;
+    this._currentSpeakerId = null;
     this._knownDeviceIds = new Set();
     this._devToastTimer  = null;
     this._pendingSwitch  = null;
@@ -4487,7 +4488,7 @@ class WebRTCMeetingAPI {
   async _initDeviceWatcher() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      devices.forEach(d => this._knownDeviceIds.add(d.deviceId));
+      this._knownDevices = devices.filter(d => d.deviceId !== 'default' && d.deviceId !== 'communications');
       const audioTrack = this._localStream?.getAudioTracks()[0];
       const videoTrack = this._localStream?.getVideoTracks()[0];
       this._currentMicId = audioTrack?.getSettings()?.deviceId || null;
@@ -4509,6 +4510,7 @@ class WebRTCMeetingAPI {
       if (this._pendingSwitch) {
         const { kind, deviceId } = this._pendingSwitch;
         if (kind === 'audioinput') this._switchMic(deviceId);
+        else if (kind === 'audiooutput') this._switchSpeaker(deviceId);
         else this._switchCam(deviceId);
       }
       this._hideDevToast();
@@ -4519,18 +4521,43 @@ class WebRTCMeetingAPI {
   async _onDeviceChange() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const newDevices = devices.filter(d =>
-        d.deviceId !== 'default' && d.deviceId !== 'communications' &&
-        !this._knownDeviceIds.has(d.deviceId) &&
-        (d.kind === 'audioinput' || d.kind === 'videoinput')
-      );
-      this._knownDeviceIds = new Set(devices.map(d => d.deviceId));
-      if (newDevices.length > 0) {
-        const dev = newDevices[0];
-        const typeLabel = dev.kind === 'audioinput' ? 'microphone' : 'camera';
-        const devName = dev.label || `New ${typeLabel}`;
-        this._pendingSwitch = { kind: dev.kind, deviceId: dev.deviceId };
-        this._showDevToast(`New ${typeLabel} connected: ${devName}`);
+      const relevant = devices.filter(d => d.deviceId !== 'default' && d.deviceId !== 'communications');
+      const prev = this._knownDevices || [];
+
+      // Count-based diff — avoids false positives when Chrome rehashes deviceIds
+      const prevAudio  = prev.filter(d => d.kind === 'audioinput').length;
+      const prevVideo  = prev.filter(d => d.kind === 'videoinput').length;
+      const prevOutput = prev.filter(d => d.kind === 'audiooutput').length;
+      const nextAudio  = relevant.filter(d => d.kind === 'audioinput').length;
+      const nextVideo  = relevant.filter(d => d.kind === 'videoinput').length;
+      const nextOutput = relevant.filter(d => d.kind === 'audiooutput').length;
+
+      this._knownDevices = relevant;
+
+      if (nextAudio > prevAudio) {
+        const prevIds = new Set(prev.filter(d => d.kind === 'audioinput').map(d => d.deviceId));
+        const newMic = relevant.filter(d => d.kind === 'audioinput').find(d => !prevIds.has(d.deviceId))
+          || relevant.filter(d => d.kind === 'audioinput').pop();
+        if (newMic) {
+          this._pendingSwitch = { kind: 'audioinput', deviceId: newMic.deviceId };
+          this._showDevToast(`New microphone connected: ${newMic.label || 'Microphone'}`);
+        }
+      } else if (nextOutput > prevOutput) {
+        const prevIds = new Set(prev.filter(d => d.kind === 'audiooutput').map(d => d.deviceId));
+        const newSpk = relevant.filter(d => d.kind === 'audiooutput').find(d => !prevIds.has(d.deviceId))
+          || relevant.filter(d => d.kind === 'audiooutput').pop();
+        if (newSpk) {
+          this._pendingSwitch = { kind: 'audiooutput', deviceId: newSpk.deviceId };
+          this._showDevToast(`New speaker connected: ${newSpk.label || 'Speaker'}`);
+        }
+      } else if (nextVideo > prevVideo) {
+        const prevIds = new Set(prev.filter(d => d.kind === 'videoinput').map(d => d.deviceId));
+        const newCam = relevant.filter(d => d.kind === 'videoinput').find(d => !prevIds.has(d.deviceId))
+          || relevant.filter(d => d.kind === 'videoinput').pop();
+        if (newCam) {
+          this._pendingSwitch = { kind: 'videoinput', deviceId: newCam.deviceId };
+          this._showDevToast(`New camera connected: ${newCam.label || 'Camera'}`);
+        }
       }
     } catch(_) {}
   }
@@ -4560,55 +4587,88 @@ class WebRTCMeetingAPI {
     this._closeDeviceMenus();
     if (!isOpen) {
       await this._buildDeviceMenu(kind);
+      menu.style.visibility = 'hidden';
       menu.style.display = 'flex';
-      const chev = document.getElementById(chevId);
-      if (chev) {
-        const rect = chev.getBoundingClientRect();
-        menu.style.left = Math.max(8, rect.left - menu.offsetWidth + rect.width) + 'px';
-        menu.style.top = (rect.top - menu.offsetHeight - 8) + 'px';
-      }
+      // Position after paint so offsetWidth/Height are valid
+      requestAnimationFrame(() => {
+        const chev = document.getElementById(chevId);
+        if (chev) {
+          const rect = chev.getBoundingClientRect();
+          menu.style.left = Math.max(8, rect.left - menu.offsetWidth + rect.width) + 'px';
+          menu.style.top = (rect.top - menu.offsetHeight - 8) + 'px';
+        }
+        menu.style.visibility = '';
+      });
     }
   }
 
   _closeDeviceMenus() {
-    const mic = document.getElementById('wrtc-dev-menu-mic');
-    const cam = document.getElementById('wrtc-dev-menu-cam');
-    if (mic) mic.style.display = 'none';
-    if (cam) cam.style.display = 'none';
+    ['wrtc-dev-menu-mic', 'wrtc-dev-menu-speaker', 'wrtc-dev-menu-cam'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
   }
 
   async _buildDeviceMenu(kind) {
-    const deviceKind = kind === 'mic' ? 'audioinput' : 'videoinput';
     const menuId = kind === 'mic' ? 'wrtc-dev-menu-mic' : 'wrtc-dev-menu-cam';
     const menu = document.getElementById(menuId);
     if (!menu) return;
     menu.innerHTML = '';
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const filtered = devices.filter(d => d.kind === deviceKind && d.deviceId !== 'default' && d.deviceId !== 'communications');
-      const currentId = kind === 'mic' ? this._currentMicId : this._currentCamId;
-      if (filtered.length === 0) {
-        menu.innerHTML = '<div class="wrtc-dev-item" style="opacity:.5;cursor:default">No devices found</div>';
-        return;
+
+      if (kind === 'mic') {
+        // ── Microphone section ──
+        const mics = devices.filter(d => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
+        this._appendDevSection(menu, 'Microphone', mics, this._currentMicId, (id) => this._switchMic(id));
+
+        // ── Speaker section ──
+        const speakers = devices.filter(d => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
+        if (speakers.length > 0) {
+          const divider = document.createElement('div');
+          divider.className = 'wrtc-more-divider';
+          menu.appendChild(divider);
+          this._appendDevSection(menu, 'Speaker', speakers, this._currentSpeakerId, (id) => this._switchSpeaker(id));
+        }
+      } else {
+        // ── Camera section ──
+        const cams = devices.filter(d => d.kind === 'videoinput' && d.deviceId !== 'default');
+        this._appendDevSection(menu, 'Camera', cams, this._currentCamId, (id) => this._switchCam(id));
       }
-      filtered.forEach(dev => {
-        const item = document.createElement('div');
-        item.className = 'wrtc-dev-item' + (dev.deviceId === currentId ? ' active' : '');
-        const check = dev.deviceId === currentId
-          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
-          : '<span style="width:16px;display:inline-block"></span>';
-        item.innerHTML = `${check}<span class="wrtc-dev-item-label">${dev.label || (kind === 'mic' ? 'Microphone' : 'Camera')}</span>`;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (kind === 'mic') this._switchMic(dev.deviceId);
-          else this._switchCam(dev.deviceId);
-          this._closeDeviceMenus();
-        });
-        menu.appendChild(item);
-      });
     } catch(_) {
       menu.innerHTML = '<div class="wrtc-dev-item" style="opacity:.5;cursor:default">Unable to list devices</div>';
     }
+  }
+
+  _appendDevSection(menu, label, devices, currentId, onSelect) {
+    const heading = document.createElement('div');
+    heading.style.cssText = 'padding:6px 14px 4px;font-size:11px;font-weight:600;color:#9aa0a6;text-transform:uppercase;letter-spacing:0.5px';
+    heading.textContent = label;
+    menu.appendChild(heading);
+
+    if (devices.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'wrtc-dev-item';
+      empty.style.cssText = 'opacity:.5;cursor:default';
+      empty.textContent = 'No devices found';
+      menu.appendChild(empty);
+      return;
+    }
+
+    devices.forEach(dev => {
+      const item = document.createElement('div');
+      item.className = 'wrtc-dev-item' + (dev.deviceId === currentId ? ' active' : '');
+      const check = dev.deviceId === currentId
+        ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
+        : '<span style="width:16px;display:inline-block"></span>';
+      item.innerHTML = `${check}<span class="wrtc-dev-item-label">${dev.label || label}</span>`;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onSelect(dev.deviceId);
+        this._closeDeviceMenus();
+      });
+      menu.appendChild(item);
+    });
   }
 
   async _switchMic(deviceId) {
@@ -4627,6 +4687,20 @@ class WebRTCMeetingAPI {
     } catch(e) {
       this._toast('Failed to switch microphone');
       console.error('[DevSwitch] mic:', e);
+    }
+  }
+
+  async _switchSpeaker(deviceId) {
+    try {
+      const videoEls = document.querySelectorAll('[id^="wrtc-vid-"]');
+      for (const el of videoEls) {
+        if (typeof el.setSinkId === 'function') await el.setSinkId(deviceId);
+      }
+      this._currentSpeakerId = deviceId;
+      this._toast('Speaker switched');
+    } catch(e) {
+      this._toast('Failed to switch speaker');
+      console.error('[DevSwitch] speaker:', e);
     }
   }
 
