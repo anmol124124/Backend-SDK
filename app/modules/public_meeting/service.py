@@ -219,6 +219,7 @@ async def list_user_meetings(user_id: _uuid.UUID, db: AsyncSession) -> list[Meet
             url=f"{settings.PUBLIC_MEET_URL}/{m.room_code}",
             is_active=m.is_active,
             scheduled_at=m.scheduled_at,
+            created_at=m.created_at,
         )
         for m in rows
     ]

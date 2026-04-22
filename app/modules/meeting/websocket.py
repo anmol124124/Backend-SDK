@@ -191,6 +191,38 @@ async def _record_meeting_end(room_id: str) -> None:
         logger.warning("Failed to record meeting end  room=%s  error=%s", room_id, exc)
 
 
+async def _record_public_participant_join(room_code: str, display_name: str, role: str) -> None:
+    from datetime import datetime, timezone
+    from app.modules.public_meeting.models import PublicMeetingParticipant
+    try:
+        async with AsyncSessionLocal() as db:
+            p = PublicMeetingParticipant(
+                room_code=room_code,
+                display_name=display_name,
+                role=role,
+                joined_at=datetime.now(timezone.utc),
+            )
+            db.add(p)
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to record public participant join  room=%s  error=%s", room_code, exc)
+
+
+async def _record_public_participant_leave(room_code: str, participant_id) -> None:
+    from datetime import datetime, timezone
+    from app.modules.public_meeting.models import PublicMeetingParticipant
+    try:
+        async with AsyncSessionLocal() as db:
+            p = await db.get(PublicMeetingParticipant, participant_id)
+            if p and p.left_at is None:
+                p.left_at = datetime.now(timezone.utc)
+                delta = p.left_at - p.joined_at
+                p.duration_seconds = int(delta.total_seconds())
+                await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to record public participant leave  room=%s  error=%s", room_code, exc)
+
+
 async def _deactivate_public_meeting(room_code: str) -> None:
     """Mark a public meeting as inactive so refresh/rejoin is blocked."""
     try:
@@ -855,12 +887,36 @@ async def signaling_endpoint(
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 
-    # ── Analytics: record participant join for ProjectMeeting rooms ──────────
+    # ── Analytics: record participant join ───────────────────────────────────
     _is_pm = is_embed_host or (token_type == "access" and token_role == "guest")
     if _is_pm and await _is_project_meeting(room_id):
         _p_role = "host" if is_embed_host else "guest"
         _p_name = guest_name if not is_embed_host else getattr(user, "email", str(user.id))
         asyncio.create_task(_record_participant_join(room_id, base_user_id, _p_name, _p_role))
+
+    # Public meeting participant tracking
+    _pub_participant_id = None
+    if _is_public_meeting:
+        import uuid as _uuid2
+        from app.modules.public_meeting.models import PublicMeetingParticipant as _PMP
+        from datetime import datetime as _dt2, timezone as _tz2
+        _pub_role = "host" if token_type == "public_host" else "guest"
+        _pub_name = guest_name or getattr(user, "email", str(user.id))
+        _pub_participant_id = _uuid2.uuid4()
+        try:
+            async with AsyncSessionLocal() as _pdb:
+                _pmp = _PMP(
+                    id=_pub_participant_id,
+                    room_code=room_id,
+                    display_name=_pub_name,
+                    role=_pub_role,
+                    joined_at=_dt2.now(_tz2.utc),
+                )
+                _pdb.add(_pmp)
+                await _pdb.commit()
+        except Exception as _e:
+            logger.warning("Failed to record public participant join  room=%s  error=%s", room_id, _e)
+            _pub_participant_id = None
 
     # Public-host and embed-host tokens always reclaim host (handles refresh + reinstatement)
     if token_type == "public_host" or is_embed_host:
@@ -1293,6 +1349,9 @@ async def signaling_endpoint(
         if _is_pm:
             asyncio.create_task(_record_participant_leave(room_id, base_user_id))
 
+        if _is_public_meeting and _pub_participant_id is not None:
+            asyncio.create_task(_record_public_participant_leave(room_id, _pub_participant_id))
+
         manager.disconnect(room_id, user_id)
         manager.remove_participant_state(room_id, base_user_id)
         manager.set_hand_raised(room_id, base_user_id, False)
@@ -1301,6 +1360,8 @@ async def signaling_endpoint(
         # When the host leaves, the grace period below handles ending (gives time to reconnect).
         if _is_pm and manager.room_size(room_id) == 0 and not was_host:
             asyncio.create_task(_record_meeting_end(room_id))
+            if _is_public_meeting:
+                asyncio.create_task(_deactivate_public_meeting(room_id))
 
         # Remove peer from mediasoup (closes transports, producers, consumers)
         try:
@@ -1329,6 +1390,8 @@ async def signaling_endpoint(
                     manager.resolve_pending(room_id, pid, False)
                 manager.cancel_time_limit(room_id)
                 await _record_meeting_end(room_id)
+                if _is_public_meeting:
+                    await _deactivate_public_meeting(room_id)
             manager.start_host_grace(room_id, _end_meeting_after_grace, timeout=60)
             logger.info("Host absent — grace period started  room=%s", room_id)
 

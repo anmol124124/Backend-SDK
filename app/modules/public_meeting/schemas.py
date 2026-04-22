@@ -40,6 +40,7 @@ class MeetingListItem(BaseModel):
     url: str
     is_active: bool
     scheduled_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
 
 
 class GuestTokenRequest(BaseModel):

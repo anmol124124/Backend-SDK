@@ -129,6 +129,65 @@ async def list_public_recordings(
     return result.scalars().all()
 
 
+# ── Meeting Summary (participants) ────────────────────────────────────────────
+
+import datetime as _dt_mod
+from app.modules.public_meeting.models import PublicMeetingParticipant
+
+
+class PublicParticipantItem(BaseModel):
+    id: _uuid.UUID
+    display_name: str
+    role: str
+    joined_at: _dt_mod.datetime
+    left_at: _dt_mod.datetime | None
+    duration_seconds: int | None
+
+    model_config = {"from_attributes": True}
+
+
+class MeetingSummaryResponse(BaseModel):
+    room_code: str
+    name: str
+    is_active: bool
+    created_at: _dt_mod.datetime | None
+    scheduled_at: _dt_mod.datetime | None
+    participants: list[PublicParticipantItem]
+
+
+@router.get("/summary/{room_code}", response_model=MeetingSummaryResponse, tags=["Public Meet"])
+async def get_meeting_summary(
+    room_code: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select as _sel
+    from app.modules.public_meeting.models import PublicMeeting
+    mtg = (await db.execute(
+        _sel(PublicMeeting).where(
+            PublicMeeting.room_code == room_code,
+            PublicMeeting.created_by == current_user.id,
+        )
+    )).scalar_one_or_none()
+    if not mtg:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    parts = (await db.execute(
+        _sel(PublicMeetingParticipant)
+        .where(PublicMeetingParticipant.room_code == room_code)
+        .order_by(PublicMeetingParticipant.joined_at.asc())
+    )).scalars().all()
+
+    return MeetingSummaryResponse(
+        room_code=mtg.room_code,
+        name=mtg.name,
+        is_active=mtg.is_active,
+        created_at=mtg.created_at,
+        scheduled_at=mtg.scheduled_at,
+        participants=parts,
+    )
+
+
 # ── Parametric routes (must come after static routes above) ───────────────────
 
 @router.get("/{room_code}", response_model=MeetingInfoResponse)
