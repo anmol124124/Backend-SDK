@@ -5486,6 +5486,7 @@ class WebRTCMeetingAPI {
         this._shareStream?.getTracks().forEach(t => t.stop());
         this._localStream = null;
         this._shareStream = null;
+        try { localStorage.setItem("meeting_ended_" + this.roomName, "1"); } catch(_) {}
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
@@ -5517,6 +5518,7 @@ class WebRTCMeetingAPI {
         this._shareStream?.getTracks().forEach(t => t.stop());
         this._localStream = null;
         this._shareStream = null;
+        try { localStorage.setItem("meeting_ended_" + this.roomName, "1"); } catch(_) {}
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
@@ -5533,8 +5535,7 @@ class WebRTCMeetingAPI {
         this._ws?.close();
         const _isHostEnd = this._isHost;
         const _plan = payload.plan || "free";
-        const _upgradeBase = this._upgradePlanUrl || (this._httpBase + '/?upgrade=1');
-        const _upgradeUrl = _upgradeBase + ((_upgradeBase.includes('?') ? '&' : '?') + 'plan=' + encodeURIComponent(_plan));
+        const _upgradeUrl = window.location.origin + '/pricing';
         const _hostMsg = payload.message || "Your meeting has ended — the time limit for your plan was reached.";
         const _upgradeBtn = _isHostEnd
           ? '<button onclick="window.location.href=\'' + _upgradeUrl + '\'" ' +
