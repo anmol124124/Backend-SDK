@@ -557,6 +557,7 @@ async def signaling_endpoint(
     from app.modules.project.mau import (
         check_and_record_mau, get_project_and_plan, PLAN_PARTICIPANT_LIMITS, PLAN_TIME_LIMITS,
         PUBLIC_MEETING_PARTICIPANT_LIMIT, PUBLIC_MEETING_TIME_LIMIT_MINUTES,
+        PUBLIC_MEETING_PARTICIPANT_LIMITS, PUBLIC_MEETING_TIME_LIMITS,
     )
     project_id, owner_plan, _room_found = await get_project_and_plan(meeting_id)
     _is_public_meeting = (project_id is None and _room_found)
@@ -573,7 +574,7 @@ async def signaling_endpoint(
             if _proj is not None:
                 _allow_recording = _proj.allow_recording
     if _is_public_meeting:
-        p_limit: int | None = PUBLIC_MEETING_PARTICIPANT_LIMIT
+        p_limit: int | None = PUBLIC_MEETING_PARTICIPANT_LIMITS.get(owner_plan, 2)
     else:
         p_limit: int | None = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 100) if _room_found else None
 
@@ -926,7 +927,7 @@ async def signaling_endpoint(
             logger.info("Host initialized the meeting  room=%s  host=%s", room_id, user_id)
             # Start time limit timer (only on first host join, not reconnects)
             # Public meetings use a fixed 40-minute limit; embed meetings use plan-based limit
-            _t_limit: int | None = PUBLIC_MEETING_TIME_LIMIT_MINUTES if _is_public_meeting else PLAN_TIME_LIMITS.get(owner_plan)
+            _t_limit: int | None = PUBLIC_MEETING_TIME_LIMITS.get(owner_plan, 5) if _is_public_meeting else PLAN_TIME_LIMITS.get(owner_plan)
             if _t_limit is not None:
                 _plan_label = owner_plan or "free"
                 _plan_display = _plan_label.capitalize()

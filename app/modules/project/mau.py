@@ -51,12 +51,33 @@ PLAN_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
 # Max meeting duration in minutes (None = unlimited)
 PLAN_TIME_LIMITS: dict[str | None, int | None] = {
     None:      40,     # free  → 40 minutes
-    "basic":   1440,     # basic → 24 hours
+    "basic":   1440,   # basic → 24 hours
     "pro":     None,   # unlimited
     "premium": None,   # unlimited
 }
 
-# Fixed limits for public-meet meetings (apply regardless of host plan)
+# Public-meet participant limits per host plan (non-host count; host is always free)
+# Total capacity = limit + 1 host
+PUBLIC_MEETING_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
+    None:        2,    # free/starter  → 1 host + 2 guests
+    "free":      2,
+    "basic":     3,    # basic         → 1 host + 3 guests (4 total)
+    "pro":       5,    # pro           → 1 host + 5 guests (6 total)
+    "premium":   None, # enterprise    → unlimited
+    "enterprise": None,
+}
+
+# Public-meet time limits per host plan (minutes; None = unlimited)
+PUBLIC_MEETING_TIME_LIMITS: dict[str | None, int | None] = {
+    None:        5,    # free/starter  → 5 minutes
+    "free":      5,
+    "basic":     10,   # basic         → 10 minutes
+    "pro":       None, # pro           → unlimited
+    "premium":   None,
+    "enterprise": None,
+}
+
+# Legacy flat constants kept for backwards compatibility
 PUBLIC_MEETING_PARTICIPANT_LIMIT: int = 100
 PUBLIC_MEETING_TIME_LIMIT_MINUTES: int = 40
 

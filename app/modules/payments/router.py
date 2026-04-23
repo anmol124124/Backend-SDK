@@ -14,12 +14,14 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 PLAN_PRICES = {
-    "basic":   999,   # $9.99 / month
-    "pro":    2999,   # $29.99 / month
-    "premium": 9999,  # $99.99 / month
+    "free":       0,   # $0 / forever
+    "basic":    999,   # $9.99 / month
+    "pro":     2999,   # $29.99 / month
+    "premium": 9999,   # $99.99 / month
 }
 
 PLAN_NAMES = {
+    "free":    "Starter (Free)",
     "basic":   "Basic Plan",
     "pro":     "Pro Plan",
     "premium": "Premium Plan",
@@ -53,7 +55,7 @@ async def create_checkout_session(
     if plan not in PLAN_PRICES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown plan '{plan}'. Choose from: basic, pro, premium.",
+            detail=f"Unknown plan '{plan}'. Choose from: free, basic, pro, premium.",
         )
 
     try:
@@ -97,7 +99,7 @@ async def activate_plan(
     if plan not in PLAN_PRICES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown plan '{plan}'. Choose from: basic, pro, premium.",
+            detail=f"Unknown plan '{plan}'. Choose from: free, basic, pro, premium.",
         )
     result = await db.execute(select(User).where(User.id == current_user.id))
     user = result.scalar_one_or_none()
