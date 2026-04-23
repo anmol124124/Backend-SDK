@@ -924,6 +924,7 @@ async def signaling_endpoint(
         # First time this meeting has a host — record as permanent host
         if manager.get_permanent_host(room_id) is None:
             manager.set_permanent_host(room_id, user_id)
+            manager.record_meeting_start(room_id)
             logger.info("Host initialized the meeting  room=%s  host=%s", room_id, user_id)
             # Start time limit timer (only on first host join, not reconnects)
             # Public meetings use a fixed 40-minute limit; embed meetings use plan-based limit
@@ -1031,6 +1032,8 @@ async def signaling_endpoint(
                 "ownerPlan": owner_plan,
                 "isPublicMeeting": _is_public_meeting,
                 "allowRecording": _allow_recording,
+                # Epoch ms when meeting timer started — clients sync their countdown to this
+                "meetingStartedAt": manager.get_meeting_started_at(room_id),
             },
         },
     )
@@ -1267,7 +1270,11 @@ async def signaling_endpoint(
                     for pid in manager.get_pending_ids(room_id):
                         manager.resolve_pending(room_id, pid, False)
                     manager.cancel_time_limit(room_id)
+                    # Clear permanent host so the finally block doesn't start a grace period
+                    manager.clear_permanent_host(room_id)
                     asyncio.create_task(_record_meeting_end(room_id))
+                    if _is_public_meeting:
+                        asyncio.create_task(_deactivate_public_meeting(room_id))
                     logger.info("Meeting ended by host  room=%s  host=%s", room_id, user_id)
                     break  # host leaves after ending
                 continue
@@ -1376,9 +1383,8 @@ async def signaling_endpoint(
             {"type": "leave", "from": user_id, "payload": {"user_id": user_id}},
         )
 
-        # If the permanent host left, start a 60-second grace period.
+        # If the permanent host left, start a 5-minute grace period.
         # If they reconnect in time, cancel it. Otherwise, end the meeting.
-        # This also covers the case where the host was the only participant (room_size == 0).
         if was_host and was_permanent_host:
             async def _end_meeting_after_grace():
                 logger.info("Grace period expired  room=%s  host=%s", room_id, user_id)
@@ -1393,7 +1399,7 @@ async def signaling_endpoint(
                 await _record_meeting_end(room_id)
                 if _is_public_meeting:
                     await _deactivate_public_meeting(room_id)
-            manager.start_host_grace(room_id, _end_meeting_after_grace, timeout=60)
-            logger.info("Host absent — grace period started  room=%s", room_id)
+            manager.start_host_grace(room_id, _end_meeting_after_grace, timeout=300)
+            logger.info("Host absent — grace period started (5 min)  room=%s", room_id)
 
         logger.info("WS cleanup done  meeting=%s  user=%s", room_id, user_id)

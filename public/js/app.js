@@ -117,9 +117,10 @@ class WebRTCMeetingAPI {
     // Misc
     this._isLeaving          = false;
     this._uiBuilt            = false;
-    this._isReconnecting     = reconnect;
-    this._meetingStart       = null;
-    this._settings           = {}; // meeting permissions from server
+    this._isReconnecting          = reconnect;
+    this._meetingStart            = null;
+    this._serverMeetingStartedAt  = null; // epoch ms from server user-list payload
+    this._settings                = {}; // meeting permissions from server
     this._ownerPlan          = null;   // plan of the project owner (null = free/basic)
     this._isPublicMeeting    = false;  // true for public-meet rooms
     this._allowRecording     = true;   // set by project owner in dashboard settings
@@ -765,7 +766,7 @@ class WebRTCMeetingAPI {
             <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
               <path d="M21 6.5l-4-4-9.27 9.27-.73-.73-1.41 1.41.73.73-3 3H3v2h2.27L2 21l1.41 1.41L21 4.91 21 6.5zm-7 7l-5.5-5.5H16v3.5l4-4v9l-1.17-1.17L14 13.5zM3 7h2.27L7 8.73V7H3zm14 10H7.27l-2-2H17v2z"/>
             </svg>
-            <span>Camera is off</span>
+            <span id="wrtc-lobby-media-status">Camera is off</span>
           </div>
           <div class="wrtc-lobby-preview-btns">
             <button class="wrtc-lbtn" id="wrtc-lobby-mic" title="Toggle mic">
@@ -858,6 +859,7 @@ class WebRTCMeetingAPI {
             document.getElementById("wrtc-lobby-mic").classList.remove("muted");
             document.getElementById("wrtc-lobby-mic-on").style.display  = "";
             document.getElementById("wrtc-lobby-mic-off").style.display = "none";
+            this._updateLobbyMediaStatus();
           })
           .catch(() => { /* permission denied — stay mic-off */ });
         return;
@@ -867,6 +869,7 @@ class WebRTCMeetingAPI {
       document.getElementById("wrtc-lobby-mic").classList.toggle("muted", !this._micEnabled);
       document.getElementById("wrtc-lobby-mic-on").style.display  = this._micEnabled ? "" : "none";
       document.getElementById("wrtc-lobby-mic-off").style.display = this._micEnabled ? "none" : "";
+      this._updateLobbyMediaStatus();
     });
     document.getElementById("wrtc-lobby-cam").addEventListener("click", () => {
       const hasVideo = (this._localStream?.getVideoTracks().length ?? 0) > 0;
@@ -900,6 +903,7 @@ class WebRTCMeetingAPI {
     // Start camera preview, then auto-rejoin if session name exists
     this._initPreview().then(() => {
       previewReady = true;
+      this._updateLobbyMediaStatus();
       refreshJoinBtn();
       const savedName = sessionStorage.getItem('wrtc_name_' + this.roomName);
       if (savedName) {
@@ -912,6 +916,13 @@ class WebRTCMeetingAPI {
         }
       }
     });
+  }
+
+  _updateLobbyMediaStatus() {
+    const el = document.getElementById("wrtc-lobby-media-status");
+    if (!el) return;
+    if (!this._camEnabled && !this._micEnabled) { el.textContent = "Camera and microphone are off"; }
+    else { el.textContent = "Camera is off"; }
   }
 
   _showPermissionHint() {
@@ -1271,9 +1282,16 @@ class WebRTCMeetingAPI {
     if (this._uiBuilt) return;
     this._uiBuilt = true;
     const startKey = 'wrtc_start_' + this.roomName;
-    const saved = sessionStorage.getItem(startKey);
-    this._meetingStart = saved ? parseInt(saved, 10) : Date.now();
-    if (!saved) sessionStorage.setItem(startKey, String(this._meetingStart));
+    // Prefer server-authoritative start time so all participants share the same countdown.
+    // Fall back to cached value (reconnect) or local Date.now() (no timer on this plan).
+    if (this._serverMeetingStartedAt) {
+      this._meetingStart = this._serverMeetingStartedAt;
+      sessionStorage.setItem(startKey, String(this._meetingStart));
+    } else {
+      const saved = sessionStorage.getItem(startKey);
+      this._meetingStart = saved ? parseInt(saved, 10) : Date.now();
+      if (!saved) sessionStorage.setItem(startKey, String(this._meetingStart));
+    }
     // Re-apply saved cam/mic state (handles cases where it may have been reset before UI builds)
     if (sessionStorage.getItem('wrtc_mic_' + this.roomName) === '0') {
       this._micEnabled = false;
@@ -1491,8 +1509,9 @@ class WebRTCMeetingAPI {
         to{opacity:1;transform:scale(1)}
       }
       @keyframes wrtc-tile-out{
-        from{opacity:1;transform:scale(1)}
-        to{opacity:0;transform:scale(.88)}
+        0%  {opacity:1;transform:scale(1) translateY(0);filter:blur(0px)}
+        30% {opacity:.8;transform:scale(.97) translateY(4px);filter:blur(1px)}
+        100%{opacity:0;transform:scale(.88) translateY(24px);filter:blur(6px)}
       }
       @keyframes wrtc-speak-pulse{
         0%,100%{box-shadow:0 0 0 3px #4d94ff,0 0 16px 4px rgba(77,148,255,.35),0 4px 24px rgba(0,0,0,.35)}
@@ -1513,8 +1532,9 @@ class WebRTCMeetingAPI {
         animation:wrtc-tile-in .35s cubic-bezier(.34,1.4,.64,1) both,wrtc-speak-pulse 1.4s ease-in-out infinite;
       }
       .wrtc-tile.wrtc-tile-leaving{
-        animation:wrtc-tile-out .28s ease-in forwards;
+        animation:wrtc-tile-out .45s cubic-bezier(.4,0,1,1) forwards;
         pointer-events:none;
+        will-change:transform,opacity,filter;
       }
       .wrtc-tile-avatar{
         position:absolute;inset:0;
@@ -5378,6 +5398,7 @@ class WebRTCMeetingAPI {
             }
           });
         }
+        if (payload.meetingStartedAt) this._serverMeetingStartedAt = payload.meetingStartedAt;
         this._buildUIAfterAdmit(); // build full meeting UI now (first time only)
         this._applySettings();
         // Restore host bulk-mute button state AFTER _applySettings — it re-shows muteall/mutecams
@@ -5442,6 +5463,10 @@ class WebRTCMeetingAPI {
         if (payload.name) this._peerNames[payload.user_id] = payload.name;
         this._participants[payload.user_id] = this._displayName(payload.user_id);
         this._renderParticipants();
+        // Clear any pending knock UI — this user was admitted (possibly by another participant)
+        document.getElementById("wrtc-knock-popup-" + payload.user_id)?.remove();
+        { const _ke = document.getElementById("wrtc-knock-entry-" + payload.user_id);
+          if (_ke) { _ke.remove(); const _kl = document.getElementById("wrtc-knock-list"); if (_kl && !_kl.querySelectorAll(".wrtc-knock-entry").length) this._clearKnockHeader(); } }
         // Pre-create the tile immediately so participant is visible in the grid
         // even if they join with no camera/mic tracks (ontrack would never fire).
         this._ensureRemoteTile(payload.user_id);
@@ -6168,12 +6193,22 @@ class WebRTCMeetingAPI {
       if (grid) grid.style.display = "";
     }
     const _lt = document.getElementById(leavingTileId);
-    if (_lt) { _lt.classList.add("wrtc-tile-leaving"); _lt.addEventListener("animationend", () => _lt.remove(), { once: true }); }
+    if (_lt) {
+      _lt.classList.add("wrtc-tile-leaving");
+      const _doRemove = () => {
+        if (_lt.isConnected) _lt.remove();
+        this._updateGrid();
+      };
+      _lt.addEventListener("animationend", _doRemove, { once: true });
+      // Fallback: if animationend never fires (reduced-motion, hidden tab, etc.) run after 600ms
+      setTimeout(_doRemove, 600);
+    } else {
+      this._updateGrid();
+    }
     // Remove this user's thumb from the presentation strip (if active).
     document.querySelectorAll(`#wrtc-thumbs .wrtc-thumb-tile[data-user-id="${userId}"]`)
       .forEach(t => t.remove());
     this._updateUserCount(Object.keys(this._peerConnections).length + 1);
-    this._updateGrid();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -6406,24 +6441,47 @@ class WebRTCMeetingAPI {
   _showHostLeaveModal() {
     if (document.getElementById("wrtc-host-leave-modal")) return;
     const participants = Object.entries(this._participants);
-    const opts = participants.map(([uid, name]) =>
-      '<option value="' + uid + '">' + (name || "Guest") + "</option>"
-    ).join("");
+    // Deduplicate by base user ID (strip session suffix) — keep first occurrence
+    const seen = new Set();
+    const unique = participants.filter(([uid]) => {
+      const base = uid.includes("_") ? uid.split("_").slice(0, -1).join("_") : uid;
+      if (seen.has(base)) return false;
+      seen.add(base);
+      return true;
+    });
+
+    let selectedUid = unique.length > 0 ? unique[0][0] : null;
 
     const overlay = document.createElement("div");
     overlay.id = "wrtc-host-leave-modal";
     overlay.style.cssText =
       "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.65);" +
-      "display:flex;align-items:center;justify-content:center;font-family:sans-serif;";
+      "display:flex;align-items:center;justify-content:center;font-family:sans-serif;padding:16px;";
+
+    const itemsHtml = unique.map(([uid, name], i) => {
+      const initials = (name || "G").split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
+      const isFirst = i === 0;
+      return '<div data-uid="' + uid + '" class="wrtc-th-item" style="display:flex;align-items:center;gap:10px;' +
+        'padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:4px;' +
+        'background:' + (isFirst ? "rgba(26,115,232,.18)" : "transparent") + ';' +
+        'border:1.5px solid ' + (isFirst ? "#1a73e8" : "transparent") + ';">' +
+        '<div style="width:32px;height:32px;border-radius:50%;background:#1a73e8;display:flex;align-items:center;' +
+        'justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0;">' + initials + '</div>' +
+        '<span style="color:#e8eaed;font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+        (name || "Guest") + '</span>' +
+        (isFirst ? '<span style="margin-left:auto;font-size:11px;color:#1a73e8;font-weight:600;">Selected</span>' : '') +
+        '</div>';
+    }).join("");
+
     overlay.innerHTML =
-      '<div style="background:#2d2e31;border-radius:16px;padding:32px;max-width:380px;width:90%;' +
-      'box-shadow:0 8px 40px rgba(0,0,0,.5);">' +
-      '<h3 style="color:#e8eaed;font-size:18px;font-weight:600;margin:0 0 8px;">Leave meeting</h3>' +
+      '<div style="background:#2d2e31;border-radius:16px;padding:28px;max-width:380px;width:100%;' +
+      'box-shadow:0 8px 40px rgba(0,0,0,.6);">' +
+      '<h3 style="color:#e8eaed;font-size:18px;font-weight:600;margin:0 0 6px;">Leave meeting</h3>' +
       '<p style="color:#9aa0a6;font-size:13px;margin:0 0 20px;">You are the host. Choose what happens when you leave.</p>' +
-      '<label style="color:#9aa0a6;font-size:12px;font-weight:500;display:block;margin-bottom:6px;">Transfer host to</label>' +
-      '<select id="wrtc-transfer-select" style="width:100%;margin-bottom:20px;padding:10px 12px;' +
-      'background:rgba(255,255,255,.07);border:1.5px solid rgba(255,255,255,.15);border-radius:8px;' +
-      'color:#e8eaed;font-size:14px;">' + opts + '</select>' +
+      '<div style="color:#9aa0a6;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Transfer host to</div>' +
+      '<div id="wrtc-th-list" style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.1);' +
+      'border-radius:10px;padding:6px;margin-bottom:20px;max-height:180px;overflow-y:auto;">' +
+      itemsHtml + '</div>' +
       '<div style="display:flex;flex-direction:column;gap:10px;">' +
       '<button id="wrtc-transfer-btn" style="background:#1a73e8;color:#fff;border:none;border-radius:10px;' +
       'padding:12px;font-size:14px;font-weight:500;cursor:pointer;">Transfer &amp; Leave</button>' +
@@ -6436,9 +6494,28 @@ class WebRTCMeetingAPI {
       '</div></div>';
     document.body.appendChild(overlay);
 
+    // Selection logic for custom list
+    overlay.querySelectorAll(".wrtc-th-item").forEach(item => {
+      item.addEventListener("click", () => {
+        selectedUid = item.dataset.uid;
+        overlay.querySelectorAll(".wrtc-th-item").forEach(el => {
+          const isSel = el.dataset.uid === selectedUid;
+          el.style.background = isSel ? "rgba(26,115,232,.18)" : "transparent";
+          el.style.border = "1.5px solid " + (isSel ? "#1a73e8" : "transparent");
+          const badge = el.querySelector("span:last-child");
+          if (badge && badge !== el.querySelector("span:nth-child(2)")) badge.remove();
+          if (isSel) {
+            const b = document.createElement("span");
+            b.style.cssText = "margin-left:auto;font-size:11px;color:#1a73e8;font-weight:600;";
+            b.textContent = "Selected";
+            el.appendChild(b);
+          }
+        });
+      });
+    });
+
     document.getElementById("wrtc-transfer-btn").addEventListener("click", () => {
-      const uid = document.getElementById("wrtc-transfer-select").value;
-      if (uid) this._sendWS({ type: "transfer-host", payload: { userId: uid } });
+      if (selectedUid) this._sendWS({ type: "transfer-host", payload: { userId: selectedUid } });
       overlay.remove();
       this._doLeave();
     });

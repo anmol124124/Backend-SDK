@@ -15,6 +15,7 @@ This lets N backend instances share signaling across a load-balancer.
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 
 from fastapi import WebSocket
@@ -37,6 +38,8 @@ class ConnectionManager:
         self._grace_tasks: dict[str, asyncio.Task] = {}
         # time limit asyncio tasks (plan-based meeting duration limit)
         self._time_limit_tasks: dict[str, asyncio.Task] = {}
+        # epoch ms when meeting timer started per room
+        self._meeting_start_times: dict[str, int] = {}
         # pending guests waiting for host approval
         # room_id → { user_id → { ws, name, event, approved } }
         self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -258,6 +261,10 @@ class ConnectionManager:
         """Set the permanent host (meeting creator). Only changes on explicit transfer."""
         self._permanent_hosts[meeting_id] = user_id
 
+    def clear_permanent_host(self, meeting_id: str) -> None:
+        """Remove permanent host record — used when meeting is intentionally ended."""
+        self._permanent_hosts.pop(meeting_id, None)
+
     def get_permanent_host(self, meeting_id: str) -> str | None:
         return self._permanent_hosts.get(meeting_id)
 
@@ -281,6 +288,11 @@ class ConnectionManager:
 
     # ── Time limit (plan-based meeting duration) ───────────────────────────────
 
+    def record_meeting_start(self, meeting_id: str) -> None:
+        """Record epoch ms when the meeting began. No-op if already recorded (idempotent)."""
+        if meeting_id not in self._meeting_start_times:
+            self._meeting_start_times[meeting_id] = int(time.time() * 1000)
+
     def start_time_limit(self, meeting_id: str, on_expire_coro, timeout_seconds: int) -> None:
         """Start a time-limit countdown. No-op if a timer is already running for this room."""
         if meeting_id in self._time_limit_tasks and not self._time_limit_tasks[meeting_id].done():
@@ -289,6 +301,10 @@ class ConnectionManager:
             await asyncio.sleep(timeout_seconds)
             await on_expire_coro()
         self._time_limit_tasks[meeting_id] = asyncio.create_task(_task())
+
+    def get_meeting_started_at(self, meeting_id: str) -> int | None:
+        """Return epoch ms when the meeting started, or None if host hasn't joined yet."""
+        return self._meeting_start_times.get(meeting_id)
 
     def cancel_time_limit(self, meeting_id: str) -> None:
         task = self._time_limit_tasks.pop(meeting_id, None)
