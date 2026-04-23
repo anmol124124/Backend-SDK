@@ -4911,8 +4911,24 @@ class WebRTCMeetingAPI {
       localTile.style.border       = "2px solid rgba(255,255,255,.1)";
       grid.style.display           = "none";
       waiting.style.display        = "flex";
+    } else if (remoteCount === 1) {
+      // 1-on-1: remote fills full screen, local is a small PiP overlay
+      if (localTile.parentElement !== stage) stage.appendChild(localTile);
+      localTile.style.position     = "fixed";
+      localTile.style.bottom       = "96px";
+      localTile.style.right        = "16px";
+      localTile.style.width        = "180px";
+      localTile.style.height       = "120px";
+      localTile.style.zIndex       = "30";
+      localTile.style.borderRadius = "12px";
+      localTile.style.boxShadow    = "0 4px 24px rgba(0,0,0,.7)";
+      localTile.style.border       = "2px solid rgba(255,255,255,.15)";
+      grid.style.display           = "";
+      waiting.style.display        = "none";
+      grid.style.gridTemplateColumns = "1fr";
+      grid.style.gridTemplateRows    = "1fr";
     } else {
-      // Others present — move local tile back into the grid and reset styles
+      // 3+ people — move local tile back into the grid and reset styles
       if (localTile.parentElement !== grid) grid.prepend(localTile);
       localTile.style.cssText = "";
       grid.style.display      = "";
@@ -4922,7 +4938,7 @@ class WebRTCMeetingAPI {
 
       const total = remoteCount + 1;
       let cols, rows;
-      if (total === 2)      { cols = 2; rows = 1; }
+      if (total === 3)      { cols = 3; rows = 1; }
       else if (total <= 4)  { cols = 2; rows = 2; }
       else if (total <= 6)  { cols = 3; rows = 2; }
       else if (total <= 9)  { cols = 3; rows = 3; }
@@ -5466,6 +5482,10 @@ class WebRTCMeetingAPI {
 
       case "meeting-ended":
         this._isLeaving = true;
+        this._localStream?.getTracks().forEach(t => t.stop());
+        this._shareStream?.getTracks().forEach(t => t.stop());
+        this._localStream = null;
+        this._shareStream = null;
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
@@ -5493,6 +5513,10 @@ class WebRTCMeetingAPI {
 
       case "meeting_ended_plan_limit": {
         this._isLeaving = true;
+        this._localStream?.getTracks().forEach(t => t.stop());
+        this._shareStream?.getTracks().forEach(t => t.stop());
+        this._localStream = null;
+        this._shareStream = null;
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
