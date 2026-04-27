@@ -3453,13 +3453,13 @@ class WebRTCMeetingAPI {
 
     const modes = screenActive
       ? [
-          { id: "screen-only",  icon: "🖥️",   title: "Record Shared Screen",        desc: "Records only the shared screen and your mic audio." },
+          { id: "screen-only",  icon: "🖥️",   title: "Record Shared Screen",        desc: "Records the window or tab you are sharing (not your full screen)." },
           { id: "screen-host",  icon: "🖥️👤",  title: "Screen + Host Camera",        desc: "Shared screen fullscreen with your webcam in the corner." },
-          { id: "everything",   icon: "🎬",   title: "Record Everything",           desc: "All video tiles and all audio mixed together." },
+          { id: "everything",   icon: "🎬",   title: "Record Everything",           desc: "Captures your full screen — every tab, window, and tile visible." },
         ]
       : [
           { id: "host-only",    icon: "👤",   title: "Record Host Only",            desc: "Captures your webcam and microphone." },
-          { id: "everything",   icon: "🎬",   title: "Record All Participants",     desc: "All video tiles and all audio mixed together." },
+          { id: "everything",   icon: "🎬",   title: "Record Everything",           desc: "Captures your full screen — every tab, window, and tile visible." },
         ];
 
     const cards = modes.map(m => `
@@ -3567,21 +3567,30 @@ class WebRTCMeetingAPI {
     const pipW = Math.floor(w * 0.25), pipH = Math.floor(h * 0.25);
     const pipX = w - pipW - 16, pipY = h - pipH - 16;
 
+    // ctx.roundRect not available in all browsers — draw manually
+    function rrect(x, y, rw, rh, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + rw, y,  x + rw, y + rh, r);
+      ctx.arcTo(x + rw, y + rh, x, y + rh, r);
+      ctx.arcTo(x, y + rh, x, y, r);
+      ctx.arcTo(x, y, x + rw, y, r);
+      ctx.closePath();
+    }
+
     function draw() {
       ctx.fillStyle = "#0f1117";
       ctx.fillRect(0, 0, w, h);
       if (screenVid.readyState >= 2) ctx.drawImage(screenVid, 0, 0, w, h);
       if (hostVid && hostVid.readyState >= 2) {
         ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(pipX, pipY, pipW, pipH, 8);
+        rrect(pipX, pipY, pipW, pipH, 8);
         ctx.clip();
         ctx.drawImage(hostVid, pipX, pipY, pipW, pipH);
         ctx.restore();
         ctx.strokeStyle = "rgba(255,255,255,.4)";
         ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.roundRect(pipX, pipY, pipW, pipH, 8);
+        rrect(pipX, pipY, pipW, pipH, 8);
         ctx.stroke();
       }
     }
@@ -3596,9 +3605,11 @@ class WebRTCMeetingAPI {
 
   _mixAudioStreams(streams) {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Resume immediately — AudioContext may start suspended after async gaps
+    audioCtx.resume().catch(() => {});
     const dest = audioCtx.createMediaStreamDestination();
     streams.forEach(s => {
-      if (s && s.getAudioTracks().length) {
+      if (s && s.getAudioTracks().filter(t => t.readyState === "live").length) {
         audioCtx.createMediaStreamSource(s).connect(dest);
       }
     });
@@ -3646,7 +3657,8 @@ class WebRTCMeetingAPI {
     let combinedStream = null;
     let audioCtx       = null;
     let canvasStream   = null;
-    const offscreenEls = [];
+    const offscreenEls   = [];
+    const tempStreams     = []; // fresh camera/mic streams acquired only for this recording
 
     // Helper: create an off-screen video element playing a stream, await readiness
     const makeOffscreen = async stream => {
@@ -3667,6 +3679,7 @@ class WebRTCMeetingAPI {
       canvasStream?._stopCanvas?.();
       try { audioCtx?.close(); } catch (_) {}
       offscreenEls.forEach(el => { el.srcObject = null; try { document.body.removeChild(el); } catch (_) {} });
+      tempStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
     };
 
     try {
@@ -3675,18 +3688,46 @@ class WebRTCMeetingAPI {
 
       if (mode === "screen-only") {
         if (!this._shareStream) { this._toast("Start screen sharing first"); return; }
-        // Screen video tracks + mic audio tracks — no canvas, no compositing
-        const screenVideoTracks = this._shareStream.getVideoTracks();
-        const micAudioTracks    = (this._localStream?.getAudioTracks() || []).filter(t => t.readyState === "live");
-        // Also include any system/tab audio the user chose to share
-        const screenAudioTracks = this._shareStream.getAudioTracks();
-        combinedStream = new MediaStream([...screenVideoTracks, ...screenAudioTracks, ...micAudioTracks]);
+
+        // If the user is sharing their entire monitor the recording would include
+        // all meeting tiles — tell them to re-share a specific window/tab instead.
+        const _shareTrack   = this._shareStream.getVideoTracks()[0];
+        const _surfaceType  = _shareTrack?.getSettings?.().displaySurface;
+        if (_surfaceType === "monitor") {
+          this._toast(
+            "You are sharing your full screen. " +
+            "Stop sharing, then click Share Screen again and choose a specific Window or Tab — " +
+            "then you can record only that content."
+          );
+          return;
+        }
+
+        // Specific window or browser tab — record exactly what is being shared
+        const micAudioTracks = (this._localStream?.getAudioTracks() || []).filter(t => t.readyState === "live");
+        combinedStream = new MediaStream([
+          ...this._shareStream.getVideoTracks(),
+          ...this._shareStream.getAudioTracks(),
+          ...micAudioTracks,
+        ]);
 
       } else if (mode === "screen-host") {
         if (!this._shareStream) { this._toast("Start screen sharing first"); return; }
         if (!this._camEnabled)  { this._toast("Turn on your camera first"); return; }
+
+        // Camera track may have been ended by browser during getDisplayMedia — get a fresh one
+        let camSourceStream = this._localStream;
+        const liveCamTracks = (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === "live");
+        if (!liveCamTracks.length) {
+          try {
+            camSourceStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            tempStreams.push(camSourceStream);
+          } catch (_) {
+            this._toast("Cannot access camera for recording"); return;
+          }
+        }
+
         const screenEl = await makeOffscreen(this._shareStream);
-        const camEl    = await makeOffscreen(this._localStream);
+        const camEl    = await makeOffscreen(camSourceStream);
         canvasStream   = this._buildPipStream(screenEl, camEl);
         const { audioCtx: ac, audioStream } = this._mixAudioStreams(
           [this._shareStream, this._localStream].filter(Boolean)
@@ -3699,23 +3740,40 @@ class WebRTCMeetingAPI {
 
       } else if (mode === "host-only") {
         if (!this._localStream) { this._toast("No camera/mic available"); return; }
-        const tracks = [
-          ...this._localStream.getVideoTracks().filter(t => t.readyState === "live"),
-          ...this._localStream.getAudioTracks().filter(t => t.readyState === "live"),
-        ];
+        let videoTracks = this._localStream.getVideoTracks().filter(t => t.readyState === "live");
+        // Camera track may be ended (browser reclaimed during screen share) — restart it
+        if (!videoTracks.length && this._camEnabled) {
+          try {
+            const freshCam = await navigator.mediaDevices.getUserMedia({ video: true });
+            videoTracks = freshCam.getVideoTracks();
+            tempStreams.push(freshCam);
+          } catch (_) {}
+        }
+        const audioTracks = this._localStream.getAudioTracks().filter(t => t.readyState === "live");
+        const tracks = [...videoTracks, ...audioTracks];
         if (!tracks.length) { this._toast("Camera and mic are not active"); return; }
         combinedStream = new MediaStream(tracks);
 
       } else if (mode === "everything") {
-        const videoEls = this._getAllVideoEls();
-        if (!videoEls.length) { this._toast("No video sources available"); return; }
-        canvasStream = this._buildCanvasStream(videoEls);
-        const { audioCtx: ac, audioStream } = this._mixAudioStreams(this._getAllAudioStreams());
-        audioCtx = ac;
+        // Capture the user's full screen so every visible tab, window and tile is included
+        let screenCaptureStream;
+        try {
+          screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+          tempStreams.push(screenCaptureStream);
+        } catch (e) {
+          if (e.name !== "NotAllowedError") this._toast("Screen capture failed: " + e.message);
+          return;
+        }
+        const micAudioTracks = (this._localStream?.getAudioTracks() || []).filter(t => t.readyState === "live");
         combinedStream = new MediaStream([
-          ...canvasStream.getVideoTracks(),
-          ...audioStream.getAudioTracks(),
+          ...screenCaptureStream.getVideoTracks(),
+          ...screenCaptureStream.getAudioTracks(),
+          ...micAudioTracks,
         ]);
+        // Stop recording automatically if the user dismisses the screen-capture picker
+        screenCaptureStream.getVideoTracks()[0].onended = () => {
+          if (this._isRecording) this._stopRecording();
+        };
       }
 
       if (!combinedStream) return;

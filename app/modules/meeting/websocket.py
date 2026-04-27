@@ -129,13 +129,11 @@ async def _record_participant_join(room_id: str, user_id: str, display_name: str
             if open_result.scalars().first():
                 return
 
-            # Reconnect detection: if this user left very recently (within 30s),
-            # reopen the existing record instead of creating a duplicate row.
             recent_result = await db.execute(
                 select(ProjectMeetingParticipant).where(
                     ProjectMeetingParticipant.room_name == room_id,
                     ProjectMeetingParticipant.user_id == user_id,
-                    ProjectMeetingParticipant.left_at >= now - timedelta(seconds=30),
+                    ProjectMeetingParticipant.left_at >= now - timedelta(seconds=5),
                 ).order_by(ProjectMeetingParticipant.joined_at.desc())
             )
             reconnect = recent_result.scalars().first()
@@ -917,63 +915,18 @@ async def signaling_endpoint(
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 
-    # ── Analytics: record participant join ───────────────────────────────────
+    # Analytics recording is deferred until after user-list is sent (the user
+    # is actually in the meeting UI). Recording here would log sessions for
+    # users who connect then navigate away from the lobby/connecting screen.
     _is_pm = is_embed_host or (token_type == "access" and token_role == "guest")
-    if _is_pm and await _is_project_meeting(room_id):
-        _p_role = "host" if is_embed_host else "guest"
-        _p_name = guest_name if not is_embed_host else getattr(user, "email", str(user.id))
-        asyncio.create_task(_record_participant_join(room_id, base_user_id, _p_name, _p_role))
+    _pm_recorded = False  # set True after user-list confirms they're in
 
     # Public meeting participant tracking
     _pub_participant_id = None
-    if _is_public_meeting:
-        import uuid as _uuid2
-        from app.modules.public_meeting.models import PublicMeetingParticipant as _PMP
-        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-        _pub_role = "host" if token_type == "public_host" else "guest"
-        _pub_name = guest_name or getattr(user, "email", str(user.id))
-        try:
-            async with AsyncSessionLocal() as _pdb:
-                now2 = _dt2.now(_tz2.utc)
-                # Guard: already has an open session → reuse its ID (no new row)
-                _open = (await _pdb.execute(
-                    select(_PMP).where(
-                        _PMP.room_code == room_id,
-                        _PMP.display_name == _pub_name,
-                        _PMP.role == _pub_role,
-                        _PMP.left_at.is_(None),
-                    )
-                )).scalars().first()
-                if _open:
-                    _pub_participant_id = _open.id
-                else:
-                    # Reconnect within 30s → reopen existing record
-                    _recent = (await _pdb.execute(
-                        select(_PMP).where(
-                            _PMP.room_code == room_id,
-                            _PMP.display_name == _pub_name,
-                            _PMP.role == _pub_role,
-                            _PMP.left_at >= now2 - _td2(seconds=30),
-                        ).order_by(_PMP.joined_at.desc())
-                    )).scalars().first()
-                    if _recent:
-                        _recent.left_at = None
-                        _recent.duration_seconds = None
-                        await _pdb.commit()
-                        _pub_participant_id = _recent.id
-                    else:
-                        _pub_participant_id = _uuid2.uuid4()
-                        _pdb.add(_PMP(
-                            id=_pub_participant_id,
-                            room_code=room_id,
-                            display_name=_pub_name,
-                            role=_pub_role,
-                            joined_at=now2,
-                        ))
-                        await _pdb.commit()
-        except Exception as _e:
-            logger.warning("Failed to record public participant join  room=%s  error=%s", room_id, _e)
-            _pub_participant_id = None
+    _pub_join_recorded  = False  # set True after user-list
+    # Capture role/name now so the deferred recording (after user-list) has them.
+    _pub_role = "host" if token_type == "public_host" else "guest"
+    _pub_name = guest_name or getattr(user, "email", str(user.id)) if _is_public_meeting else ""
 
     # Public-host and embed-host tokens always reclaim host (handles refresh + reinstatement)
     if token_type == "public_host" or is_embed_host:
@@ -1093,6 +1046,62 @@ async def signaling_endpoint(
             },
         },
     )
+
+    # ── Analytics: record participant join (deferred until user-list sent) ──────
+    # Only now is the user confirmed to be in the meeting UI, not just connecting.
+    if _is_pm and not _pm_recorded and await _is_project_meeting(room_id):
+        _p_role = "host" if is_embed_host else "guest"
+        _p_name = guest_name if not is_embed_host else getattr(user, "email", str(user.id))
+        asyncio.create_task(_record_participant_join(room_id, base_user_id, _p_name, _p_role))
+        _pm_recorded = True
+
+    if _is_public_meeting and not _pub_join_recorded:
+        import uuid as _uuid2
+        from app.modules.public_meeting.models import PublicMeetingParticipant as _PMP
+        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+        try:
+            async with AsyncSessionLocal() as _pdb:
+                now2 = _dt2.now(_tz2.utc)
+                _open = (await _pdb.execute(
+                    select(_PMP).where(
+                        _PMP.room_code == room_id,
+                        _PMP.display_name == _pub_name,
+                        _PMP.role == _pub_role,
+                        _PMP.left_at.is_(None),
+                    )
+                )).scalars().first()
+                if _open:
+                    _pub_participant_id = _open.id
+                else:
+                    # Reconnect window: 5 s covers genuine network drops / ICE restarts.
+                    # Anything longer is treated as an intentional leave → new session row.
+                    _recent = (await _pdb.execute(
+                        select(_PMP).where(
+                            _PMP.room_code == room_id,
+                            _PMP.display_name == _pub_name,
+                            _PMP.role == _pub_role,
+                            _PMP.left_at >= now2 - _td2(seconds=5),
+                        ).order_by(_PMP.joined_at.desc())
+                    )).scalars().first()
+                    if _recent:
+                        _recent.left_at = None
+                        _recent.duration_seconds = None
+                        await _pdb.commit()
+                        _pub_participant_id = _recent.id
+                    else:
+                        _pub_participant_id = _uuid2.uuid4()
+                        _pdb.add(_PMP(
+                            id=_pub_participant_id,
+                            room_code=room_id,
+                            display_name=_pub_name,
+                            role=_pub_role,
+                            joined_at=now2,
+                        ))
+                        await _pdb.commit()
+            _pub_join_recorded = True
+        except Exception as _e:
+            logger.warning("Failed to record public participant join  room=%s  error=%s", room_id, _e)
+            _pub_participant_id = None
 
     # ── Send public chat history to new joiner ────────────────────────────────
     chat_history = manager.get_public_chat(room_id)
@@ -1410,10 +1419,10 @@ async def signaling_endpoint(
         was_host = manager.is_host(room_id, user_id)
         was_permanent_host = manager.is_permanent_host(room_id, user_id)
 
-        if _is_pm:
+        if _is_pm and _pm_recorded:
             asyncio.create_task(_record_participant_leave(room_id, base_user_id))
 
-        if _is_public_meeting and _pub_participant_id is not None:
+        if _is_public_meeting and _pub_join_recorded and _pub_participant_id is not None:
             asyncio.create_task(_record_public_participant_leave(room_id, _pub_participant_id))
 
         manager.disconnect(room_id, user_id)
@@ -1422,7 +1431,8 @@ async def signaling_endpoint(
 
         # If the room is now empty AND the host didn't just leave, end the meeting.
         # When the host leaves, the grace period below handles ending (gives time to reconnect).
-        if _is_pm and manager.room_size(room_id) == 0 and not was_host:
+        # Only end if at least one participant was actually recorded (meeting truly started).
+        if _is_pm and manager.room_size(room_id) == 0 and not was_host and (_pm_recorded or _pub_join_recorded):
             asyncio.create_task(_record_meeting_end(room_id))
             if _is_public_meeting:
                 asyncio.create_task(_deactivate_public_meeting(room_id))
