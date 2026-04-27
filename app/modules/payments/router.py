@@ -12,8 +12,8 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.modules.auth.models import User
 
-# Testing: 10 minutes. Change to 30 * 24 * 60 for production (1 month).
-PLAN_EXPIRY_MINUTES = 30 * 24 * 60  # 30 days
+# Testing: 20 minutes. Change to 30 * 24 * 60 for production (1 month).
+PLAN_EXPIRY_MINUTES = 20  # 20 minutes
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 

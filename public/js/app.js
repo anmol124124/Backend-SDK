@@ -109,6 +109,8 @@ class WebRTCMeetingAPI {
     this._participants  = {};   // userId → name (everyone in room)
     this._camStates     = {};   // userId → boolean (true=on, false=off)
     this._micStates     = {};   // userId → boolean (true=on, false=off)
+    this._leaveTimers    = {};      // baseUserId → setTimeout handle (deferred "X left" chat msg)
+    this._announcedJoins = new Set(); // base user IDs that have already shown "X joined"
     // Host-side tracking: which participants were force-muted/cam-offed by admin
     this._hostForcedOffCam = new Set();
     this._hostForcedOffMic = new Set();
@@ -5554,6 +5556,10 @@ class WebRTCMeetingAPI {
         break;
 
       case "join":
+        // Cancel any deferred "X left" message — this user reconnected
+        const _joinBase = payload.user_id.split('_')[0];
+        clearTimeout(this._leaveTimers[_joinBase]);
+        delete this._leaveTimers[_joinBase];
         if (payload.name) this._peerNames[payload.user_id] = payload.name;
         this._participants[payload.user_id] = this._displayName(payload.user_id);
         this._renderParticipants();
@@ -5564,8 +5570,9 @@ class WebRTCMeetingAPI {
         // Pre-create the tile immediately so participant is visible in the grid
         // even if they join with no camera/mic tracks (ontrack would never fire).
         this._ensureRemoteTile(payload.user_id);
-        // Tell the new joiner our name and camera state
-        this._sendWS({ type: "name", payload: { name: this._myName } });
+        // Tell the new joiner our name and camera state (targeted so other existing
+        // participants don't see a spurious "X joined" when we respond)
+        this._sendWS({ type: "name", to: payload.user_id, payload: { name: this._myName } });
         this._sendWS({ type: "cam-state", payload: { enabled: this._camEnabled } });
         this._sendWS({ type: "mic-state", payload: { enabled: this._micEnabled } });
         // If we're presenting, re-announce so late joiner gets the layout
@@ -5683,16 +5690,25 @@ class WebRTCMeetingAPI {
       }
 
       case "leave": {
-        const leaveName = this._displayName(payload.user_id);
-        this._toast(`${leaveName} left the call`);
-        this._renderSystemMsg(`${leaveName} left`);
-        const presenterTile = document.getElementById(`wrtc-tile-${payload.user_id}`);
+        const _leaveId   = payload.user_id;
+        const _leaveBase = _leaveId.split('_')[0];
+        const leaveName  = this._displayName(_leaveId);
+        // Delay "X left" by 3 s so brief reconnects (page refresh, screen-share
+        // dialog stealing focus) don't flash a spurious "left/joined" pair in chat.
+        clearTimeout(this._leaveTimers[_leaveBase]);
+        this._leaveTimers[_leaveBase] = setTimeout(() => {
+          delete this._leaveTimers[_leaveBase];
+          this._announcedJoins.delete(_leaveBase); // allow "joined" if they return later
+          this._toast(`${leaveName} left the call`);
+          this._renderSystemMsg(`${leaveName} left`);
+        }, 3000);
+        const presenterTile = document.getElementById(`wrtc-tile-${_leaveId}`);
         if (presenterTile?.classList.contains("presenter")) {
-          if (this._presenterUserId === payload.user_id) this._presenterUserId = null;
+          if (this._presenterUserId === _leaveId) this._presenterUserId = null;
           this._clearPresenter();
         }
-        this._removeParticipant(payload.user_id);
-        this._cleanupPeer(payload.user_id);
+        this._removeParticipant(_leaveId);
+        this._cleanupPeer(_leaveId);
         break;
       }
 
@@ -5783,6 +5799,14 @@ class WebRTCMeetingAPI {
       }
 
       case "name": {
+        const _nameBase = from.split('_')[0];
+        // Cancel any pending "X left" — this user is still present (name re-announce)
+        clearTimeout(this._leaveTimers[_nameBase]);
+        delete this._leaveTimers[_nameBase];
+        // Show "joined" only the first time we announce this base user.
+        // _announcedJoins is set when we first show the message and cleared only
+        // after the leave timer fires (genuine leave), so reconnects stay silent.
+        const _isNewPeer = !this._announcedJoins.has(_nameBase);
         this._peerNames[from] = payload.name;
         const tile = document.getElementById(`wrtc-tile-${from}`);
         if (tile) {
@@ -5792,7 +5816,10 @@ class WebRTCMeetingAPI {
           if (av) av.textContent = payload.name.slice(0, 2).toUpperCase();
         }
         this._addParticipant(from, payload.name);
-        this._renderSystemMsg(`${payload.name} joined`);
+        if (_isNewPeer) {
+          this._announcedJoins.add(_nameBase);
+          this._renderSystemMsg(`${payload.name} joined`);
+        }
         break;
       }
 
