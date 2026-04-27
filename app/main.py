@@ -1,5 +1,7 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -16,7 +18,7 @@ logging.basicConfig(
 )
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
@@ -31,7 +33,37 @@ from app.modules.meeting.websocket import router as signaling_router
 from app.modules.project.router import router as project_router
 from app.modules.payments.router import router as payments_router
 from app.modules.public_meeting.router import router as public_meeting_router
+from app.modules.auth.models import User
 from app.modules.contact.router import router as contact_router
+
+logger = logging.getLogger(__name__)
+
+
+async def _plan_expiry_loop() -> None:
+    """Every 60 s: revert any expired paid plans back to free."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from app.modules.payments.router import _apply_plan_to_active_meetings
+            async with AsyncSessionLocal() as session:
+                now = datetime.now(timezone.utc)
+                result = await session.execute(
+                    select(User).where(
+                        User.plan != "free",
+                        User.plan_expires_at.isnot(None),
+                        User.plan_expires_at <= now,
+                    )
+                )
+                expired = result.scalars().all()
+                for user in expired:
+                    logger.info("Plan expired for user %s (%s → free)", user.id, user.plan)
+                    user.plan = "free"
+                    user.plan_expires_at = None
+                    await _apply_plan_to_active_meetings(str(user.id), "free")
+                if expired:
+                    await session.commit()
+        except Exception:
+            logger.exception("Error in plan expiry loop")
 
 
 @asynccontextmanager
@@ -40,8 +72,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_redis()
     await init_rabbitmq()
     await sfu.start()          # open persistent HTTP connection pool to mediasoup
+    expiry_task = asyncio.create_task(_plan_expiry_loop())
     yield
     # ── Shutdown ──────────────────────────────────────────────────────────
+    expiry_task.cancel()
     await sfu.stop()
     await close_redis()
     await close_rabbitmq()

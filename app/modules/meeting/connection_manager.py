@@ -38,8 +38,12 @@ class ConnectionManager:
         self._grace_tasks: dict[str, asyncio.Task] = {}
         # time limit asyncio tasks (plan-based meeting duration limit)
         self._time_limit_tasks: dict[str, asyncio.Task] = {}
+        # stored on_expire callbacks so the timer can be restarted after a plan upgrade
+        self._time_limit_callbacks: dict[str, object] = {}
         # epoch ms when meeting timer started per room
         self._meeting_start_times: dict[str, int] = {}
+        # rooms that are public-meeting rooms (not project/embed rooms)
+        self._public_rooms: set[str] = set()
         # pending guests waiting for host approval
         # room_id → { user_id → { ws, name, event, approved } }
         self._pending: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -157,10 +161,12 @@ class ConnectionManager:
             self._all_mics_muted.pop(meeting_id, None)
             self._all_cams_muted.pop(meeting_id, None)
             self._raised_hands.pop(meeting_id, None)
+            self._public_rooms.discard(meeting_id)
             self.cancel_host_grace(meeting_id)
-            # NOTE: do NOT cancel time limit here — the meeting clock must not
-            # reset if the host briefly disconnects and the room temporarily empties.
-            # Time limit is cancelled only on explicit meeting end or when it fires.
+            # NOTE: do NOT clear meeting_start_times or cancel time limit here —
+            # the meeting clock must not reset if the host briefly disconnects
+            # (e.g. page refresh) and the room temporarily empties.
+            # Both are cleared only on explicit meeting end or when the limit fires.
         logger.info("WS disconnect  meeting=%s  user=%s", meeting_id, user_id)
 
     # ── Admin-forced media state (server-authoritative) ──────────────────────
@@ -297,9 +303,23 @@ class ConnectionManager:
         """Start a time-limit countdown. No-op if a timer is already running for this room."""
         if meeting_id in self._time_limit_tasks and not self._time_limit_tasks[meeting_id].done():
             return
+        self._time_limit_callbacks[meeting_id] = on_expire_coro
         async def _task():
             await asyncio.sleep(timeout_seconds)
             await on_expire_coro()
+        self._time_limit_tasks[meeting_id] = asyncio.create_task(_task())
+
+    def update_time_limit(self, meeting_id: str, new_seconds: int) -> None:
+        """Cancel existing timer and restart with new_seconds remaining (used after plan upgrade)."""
+        callback = self._time_limit_callbacks.get(meeting_id)
+        if callback is None:
+            return
+        task = self._time_limit_tasks.pop(meeting_id, None)
+        if task and not task.done():
+            task.cancel()
+        async def _task():
+            await asyncio.sleep(new_seconds)
+            await callback()
         self._time_limit_tasks[meeting_id] = asyncio.create_task(_task())
 
     def get_meeting_started_at(self, meeting_id: str) -> int | None:
@@ -310,6 +330,19 @@ class ConnectionManager:
         task = self._time_limit_tasks.pop(meeting_id, None)
         if task and not task.done():
             task.cancel()
+        self._time_limit_callbacks.pop(meeting_id, None)
+        self._meeting_start_times.pop(meeting_id, None)
+
+    def mark_room_public(self, room_id: str) -> None:
+        self._public_rooms.add(room_id)
+
+    def is_public_room(self, room_id: str) -> bool:
+        return room_id in self._public_rooms
+
+    def get_rooms_hosted_by(self, base_user_id: str) -> list[str]:
+        """Return room IDs where this base user ID is the permanent host."""
+        prefix = base_user_id + "_"
+        return [rid for rid, host_id in self._permanent_hosts.items() if host_id.startswith(prefix)]
 
     def next_in_room(self, meeting_id: str, exclude_user_id: str) -> str | None:
         """Return the next user in join order, skipping exclude_user_id."""

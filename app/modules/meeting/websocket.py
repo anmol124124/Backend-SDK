@@ -574,6 +574,7 @@ async def signaling_endpoint(
             if _proj is not None:
                 _allow_recording = _proj.allow_recording
     if _is_public_meeting:
+        manager.mark_room_public(room_id)
         p_limit: int | None = PUBLIC_MEETING_PARTICIPANT_LIMITS.get(owner_plan, 2)
     else:
         p_limit: int | None = PLAN_PARTICIPANT_LIMITS.get(owner_plan, 100) if _room_found else None
@@ -885,6 +886,21 @@ async def signaling_endpoint(
             "Direct join (no knock)  room=%s  user=%s  is_guest=%s  is_reconnect=%s  require_approval=%s",
             room_id, user_id, is_guest, is_reconnect, require_approval,
         )
+        # If the same user already has an active session (joined from another
+        # device/browser), notify and close the old session before proceeding.
+        existing_session = manager.get_session_id_for_base(room_id, base_user_id)
+        if existing_session:
+            try:
+                await manager.send_personal(room_id, existing_session, {
+                    "type": "session-replaced",
+                    "from": "server",
+                    "payload": {"reason": "You joined this meeting from another device or browser."},
+                })
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+            manager.disconnect(room_id, existing_session)
+            logger.info("Old session replaced  room=%s  old=%s  new=%s", room_id, existing_session, user_id)
         # Host / direct join / nobody in room yet
         await manager.connect(room_id, user_id, websocket)
 

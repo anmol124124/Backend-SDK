@@ -207,9 +207,9 @@ class WebRTCMeetingAPI {
     // Override _onLeave before any early returns so all leave paths (normal, end-meeting,
     // transfer+leave, refresh+leave) always clear the session key and return to prescreen.
     const externalOnLeave = this._onLeave;
-    this._onLeave = () => {
+    this._onLeave = (reason) => {
       sessionStorage.removeItem(SESSION_KEY);
-      if (typeof externalOnLeave === 'function') externalOnLeave();
+      if (typeof externalOnLeave === 'function') externalOnLeave(reason);
       else window.location.reload();
     };
 
@@ -866,6 +866,7 @@ class WebRTCMeetingAPI {
       }
       this._micEnabled = !this._micEnabled;
       this._localStream?.getAudioTracks().forEach(t => { t.enabled = this._micEnabled; });
+      sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
       document.getElementById("wrtc-lobby-mic").classList.toggle("muted", !this._micEnabled);
       document.getElementById("wrtc-lobby-mic-on").style.display  = this._micEnabled ? "" : "none";
       document.getElementById("wrtc-lobby-mic-off").style.display = this._micEnabled ? "none" : "";
@@ -893,6 +894,7 @@ class WebRTCMeetingAPI {
       }
       this._camEnabled = !this._camEnabled;
       this._localStream?.getVideoTracks().forEach(t => { t.enabled = this._camEnabled; });
+      sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
       document.getElementById("wrtc-lobby-cam").classList.toggle("muted", !this._camEnabled);
       document.getElementById("wrtc-lobby-cam-on").style.display       = this._camEnabled ? "" : "none";
       document.getElementById("wrtc-lobby-cam-icon-off").style.display = this._camEnabled ? "none" : "";
@@ -1301,6 +1303,9 @@ class WebRTCMeetingAPI {
       this._camEnabled = false;
       this._localStream?.getVideoTracks().forEach(t => { t.enabled = false; });
     }
+    // Persist current cam/mic state so refresh restores it correctly
+    sessionStorage.setItem('wrtc_cam_' + this.roomName, this._camEnabled ? '1' : '0');
+    sessionStorage.setItem('wrtc_mic_' + this.roomName, this._micEnabled ? '1' : '0');
     // Re-apply host-forced mute state — keeps admin mute active through participant refresh
     if (sessionStorage.getItem('wrtc_force_mic_' + this.roomName) === '1') {
       this._micLocked = true; this._hostMutedMic = true;
@@ -1527,6 +1532,7 @@ class WebRTCMeetingAPI {
       .wrtc-tile video{
         width:100%;height:100%;object-fit:cover;display:block;background:#0d0f14;
       }
+      .wrtc-tile.presenter video{object-fit:contain;background:#000;}
       #wrtc-local-video{transform:scaleX(-1)}
       .wrtc-tile.speaking{
         animation:wrtc-tile-in .35s cubic-bezier(.34,1.4,.64,1) both,wrtc-speak-pulse 1.4s ease-in-out infinite;
@@ -1782,6 +1788,7 @@ class WebRTCMeetingAPI {
         position:absolute;bottom:4px;left:6px;
         font-size:10px;color:#fff;font-weight:500;
         background:rgba(0,0,0,.55);padding:2px 5px;border-radius:4px;
+        z-index:2;max-width:calc(100% - 12px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
       }
       .wrtc-thumb-pin{
         position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
@@ -2055,6 +2062,7 @@ class WebRTCMeetingAPI {
       .wrtc-msg-header{display:flex;align-items:baseline;gap:8px}
       .wrtc-msg-name{font-size:12px;font-weight:600;color:#8ab4f8}
       .wrtc-msg-name.mine{color:#81c995}
+      .wrtc-msg-name.host{color:#fbbc05}
       .wrtc-msg-time{font-size:10px;color:rgba(255,255,255,.35)}
       .wrtc-msg-text{
         font-size:13px;color:#e8eaed;line-height:1.5;
@@ -2568,7 +2576,7 @@ class WebRTCMeetingAPI {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
             <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
           </svg>
-          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn" style="display:none"></div>
+          <div class="wrtc-btn-badge" id="wrtc-chat-badge-btn"></div>
           <span class="wrtc-btn-label">Chat</span>
         </button>
 
@@ -2995,6 +3003,7 @@ class WebRTCMeetingAPI {
           document.getElementById("wrtc-local-video").style.display = "block";
           document.getElementById("wrtc-pip-avatar").style.display  = "none";
           this._sendWS({ type: "cam-state", payload: { enabled: true } });
+          if (this._isSharing) this._updateLocalThumb();
           this._toast("Camera on");
         })
         .catch(err => {
@@ -3015,7 +3024,64 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-local-video").style.display = this._camEnabled ? "block" : "none";
     document.getElementById("wrtc-pip-avatar").style.display  = this._camEnabled ? "none"  : "flex";
     this._sendWS({ type: "cam-state", payload: { enabled: this._camEnabled } });
+    if (this._isSharing) this._updateLocalThumb();
     this._toast(this._camEnabled ? "Camera on" : "Camera off");
+  }
+
+  _updateLocalThumb() {
+    const thumbs = document.getElementById("wrtc-thumbs");
+    if (!thumbs) return;
+    // Remove any existing local thumb — covers both "local" and the old "local-tile" id
+    thumbs.querySelectorAll('[data-user-id="local"],[data-user-id="local-tile"]').forEach(el => el.remove());
+
+    const _makeAvatarThumb = () => {
+      const _w = document.createElement("div");
+      _w.className = "wrtc-thumb-tile";
+      _w.dataset.userId = "local";
+      const _av = document.createElement("div");
+      _av.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1d28;border-radius:10px;";
+      const _sp = document.createElement("span");
+      _sp.style.cssText = "width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;color:#fff;background:#1a73e8;flex-shrink:0;";
+      _sp.textContent = this._getInitials(this._myName || "You");
+      _av.appendChild(_sp);
+      const _lb = document.createElement("div");
+      _lb.className = "wrtc-thumb-label";
+      _lb.textContent = (this._myName || "You") + (this._isHost ? " (Host)" : "");
+      _w.append(_av, _lb);
+      thumbs.appendChild(_w);
+    };
+
+    if (!this._camEnabled) { _makeAvatarThumb(); return; }
+
+    // Camera is on — use only live video tracks to avoid black frame from ended tracks
+    const _liveTracks = (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === 'live');
+    if (_liveTracks.length > 0) {
+      const _w = document.createElement("div");
+      _w.className = "wrtc-thumb-tile";
+      _w.dataset.userId = "local";
+      const _tv = document.createElement("video");
+      _tv.autoplay = true; _tv.playsInline = true; _tv.muted = true;
+      _tv.srcObject = new MediaStream(_liveTracks);
+      const _lb = document.createElement("div");
+      _lb.className = "wrtc-thumb-label";
+      _lb.textContent = (this._myName || "You") + (this._isHost ? " (Host)" : "");
+      _w.append(_tv, _lb);
+      thumbs.appendChild(_w);
+    } else {
+      // All camera tracks are ended (browser reclaimed during getDisplayMedia) — restart
+      _makeAvatarThumb(); // show avatar while waiting
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(camStream => {
+          const newTrack = camStream.getVideoTracks()[0];
+          const ended = (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === 'ended');
+          ended.forEach(t => { try { this._localStream?.removeTrack(t); } catch (_) {} });
+          if (this._localStream) this._localStream.addTrack(newTrack);
+          else this._localStream = camStream;
+          newTrack.enabled = true;
+          if (this._isSharing) this._updateLocalThumb(); // re-render with live track
+        })
+        .catch(() => {}); // getUserMedia failed — avatar stays
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3037,9 +3103,11 @@ class WebRTCMeetingAPI {
       const wasOn = this._camEnabledBeforeShare !== false;
       this._camEnabledBeforeShare = undefined;
 
-      // If the camera track ended while sharing (disabled track reclaimed by browser),
-      // restart the camera before attempting to restore or display it.
-      const _endedCamTracks = (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === 'ended');
+      // Only restart the camera track if it was ON before sharing started.
+      // If camera was already OFF, don't acquire a new track (would turn hardware on).
+      const _endedCamTracks = wasOn
+        ? (this._localStream?.getVideoTracks() || []).filter(t => t.readyState === 'ended')
+        : [];
       if (_endedCamTracks.length > 0) {
         this._log('Camera track ended during share — restarting camera', undefined, 'warn');
         try {
@@ -3224,12 +3292,29 @@ class WebRTCMeetingAPI {
       this._addThumb(t, thumbs);
       t.style.display = "none";
     });
-    // Also show local camera in the thumbnail strip so host sees their own cam
+    // Always show local tile in the thumbnail strip — camera feed if on, avatar if off
     const localTile = document.getElementById("wrtc-local-tile");
-    if (localTile && this._camEnabled) {
-      this._addThumb(localTile, thumbs);
+    if (localTile) {
+      if (this._camEnabled) {
+        this._addThumb(localTile, thumbs);
+      } else {
+        const _lWrap = document.createElement("div");
+        _lWrap.className = "wrtc-thumb-tile";
+        _lWrap.dataset.userId = "local";
+        const _lAvatar = document.createElement("div");
+        _lAvatar.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1d28;border-radius:10px;";
+        const _lSpan = document.createElement("span");
+        _lSpan.style.cssText = "width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;color:#fff;background:#1a73e8;flex-shrink:0;";
+        _lSpan.textContent = this._getInitials(this._myName || "You");
+        _lAvatar.appendChild(_lSpan);
+        const _lLbl = document.createElement("div");
+        _lLbl.className = "wrtc-thumb-label";
+        _lLbl.textContent = (this._myName || "You") + (this._isHost ? " (Host)" : "");
+        _lWrap.append(_lAvatar, _lLbl);
+        thumbs.appendChild(_lWrap);
+      }
     }
-    localTile.style.display = "none";
+    if (localTile) localTile.style.display = "none";
     thumbs.style.display = "flex";
   }
 
@@ -3242,7 +3327,7 @@ class WebRTCMeetingAPI {
       ? this._activeVideoStream()
       : vid.srcObject;
     if (!srcStream) return;
-    const userId = tile.id.replace("wrtc-tile-", "") || "local";
+    const userId = tile.id === "wrtc-local-tile" ? "local" : (tile.id.replace("wrtc-tile-", "") || "local");
     const wrap      = document.createElement("div");
     wrap.className  = "wrtc-thumb-tile";
     wrap.dataset.userId = userId;
@@ -3421,25 +3506,27 @@ class WebRTCMeetingAPI {
     const canvas = document.createElement("canvas");
     canvas.width = w; canvas.height = h;
     const ctx    = canvas.getContext("2d");
-    const count  = videoEls.length;
-    // First element is screen share when screen is active (set by _getAllVideoEls ordering)
-    const hasScreen = this._isSharing && count > 0;
 
     const draw = () => {
+      // Re-query every frame so new elements (e.g. screen share tile added after recording starts) are captured
+      const els   = this._getAllVideoEls();
+      const count = els.length;
+      const hasScreen = this._isSharing && count > 0;
+
       ctx.fillStyle = "#0f1117";
       ctx.fillRect(0, 0, w, h);
       if (!count) return;
 
       if (count === 1) {
-        if (videoEls[0].readyState >= 2) ctx.drawImage(videoEls[0], 0, 0, w, h);
+        if (els[0].readyState >= 2) ctx.drawImage(els[0], 0, 0, w, h);
       } else if (hasScreen && count >= 2) {
         // Screen takes left 70%, cameras stack in right 30%
         const screenW = Math.floor(w * 0.70);
         const sideW   = w - screenW;
-        const cams    = videoEls.slice(1);
+        const cams    = els.slice(1);
         const camH    = Math.floor(h / cams.length);
 
-        if (videoEls[0].readyState >= 2) ctx.drawImage(videoEls[0], 0, 0, screenW, h);
+        if (els[0].readyState >= 2) ctx.drawImage(els[0], 0, 0, screenW, h);
 
         // Divider line
         ctx.fillStyle = "#000";
@@ -3456,7 +3543,7 @@ class WebRTCMeetingAPI {
         const rows = Math.ceil(count / cols);
         const tw   = Math.floor(w / cols);
         const th   = Math.floor(h / rows);
-        videoEls.forEach((v, i) => {
+        els.forEach((v, i) => {
           if (v.readyState < 2) return;
           ctx.drawImage(v, (i % cols) * tw, Math.floor(i / cols) * th, tw, th);
         });
@@ -3693,10 +3780,11 @@ class WebRTCMeetingAPI {
     this._recordingMode = null;
     this._recordTabStream?.getTracks().forEach(t => t.stop());
     this._recordTabStream = null;
-    document.getElementById("wrtc-more-rec").classList.remove("on-air");
-    document.getElementById("wrtc-more-rec-label").textContent = "Record";
-    document.getElementById("wrtc-rec-badge").classList.remove("active");
-    document.getElementById("wrtc-rec-circle").setAttribute("fill", "currentColor");
+    document.getElementById("wrtc-more-rec")?.classList.remove("on-air");
+    const _recLbl = document.getElementById("wrtc-more-rec-label");
+    if (_recLbl) _recLbl.textContent = "Record";
+    document.getElementById("wrtc-rec-badge")?.classList.remove("active");
+    document.getElementById("wrtc-rec-circle")?.setAttribute("fill", "currentColor");
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3710,6 +3798,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-btn-people").classList.toggle("on-air", tab === "people");
     document.getElementById("wrtc-btn-chat").classList.toggle("on-air", tab === "chat");
     this._switchTab(tab);
+    this._repositionPip();
   }
 
   _switchTab(tab) {
@@ -3733,6 +3822,13 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-stage").classList.remove("panel-open");
     document.getElementById("wrtc-btn-people").classList.remove("on-air");
     document.getElementById("wrtc-btn-chat").classList.remove("on-air");
+    this._repositionPip();
+  }
+
+  _repositionPip() {
+    const localTile = document.getElementById("wrtc-local-tile");
+    if (!localTile || localTile.style.position !== "fixed") return;
+    localTile.style.right = (this._panelTab ? 356 : 16) + "px";
   }
 
   // ── PARTICIPANTS ──────────────────────────────────────────────────────────
@@ -3956,12 +4052,13 @@ class WebRTCMeetingAPI {
     const needsTrunc = safe.length > LIMIT;
     const preview    = needsTrunc ? safe.slice(0, LIMIT) + "…" : safe;
 
+    const isHostName = !isMine && name.includes("(Host)");
     const div = document.createElement("div");
     div.className = `wrtc-msg${isMine ? " mine" : ""}`;
     div.innerHTML = `
       ${isPrivate ? '<div class="wrtc-msg-private-label">🔒 Private</div>' : ""}
       <div class="wrtc-msg-header">
-        <span class="wrtc-msg-name${isMine ? " mine" : ""}">${name}</span>
+        <span class="wrtc-msg-name${isMine ? " mine" : isHostName ? " host" : ""}">${name}</span>
         <span class="wrtc-msg-time">${time}</span>
       </div>
       <span class="wrtc-msg-text" data-full="${safe.replace(/"/g,"&quot;")}" data-expanded="false">${preview}</span>
@@ -4112,7 +4209,10 @@ class WebRTCMeetingAPI {
     const show = () => {
       controls.classList.remove("wrtc-ctrl-hidden");
       clearTimeout(_hideTimer);
-      _hideTimer = setTimeout(() => controls.classList.add("wrtc-ctrl-hidden"), 10000);
+      _hideTimer = setTimeout(() => {
+        controls.classList.add("wrtc-ctrl-hidden");
+        document.getElementById("wrtc-reaction-picker")?.classList.add("hidden");
+      }, 10000);
     };
     stage.addEventListener("mousemove", show);
     stage.addEventListener("mouseenter", show);
@@ -4916,16 +5016,17 @@ class WebRTCMeetingAPI {
     const tileCount   = grid.querySelectorAll(".wrtc-tile:not(#wrtc-local-tile)").length;
     const remoteCount = Math.max(pcCount, tileCount);
 
+    const _pipRight = (this._panelTab ? 356 : 16) + "px";
     if (remoteCount === 0) {
       // Alone — move local tile OUT of the hidden grid directly into stage
       // (display:none on a parent hides fixed children too, so we must reparent)
       if (localTile.parentElement !== stage) stage.appendChild(localTile);
       localTile.style.position     = "fixed";
       localTile.style.bottom       = "96px";
-      localTile.style.right        = "16px";
+      localTile.style.right        = _pipRight;
       localTile.style.width        = "200px";
       localTile.style.height       = "130px";
-      localTile.style.zIndex       = "30";
+      localTile.style.zIndex       = "33";
       localTile.style.borderRadius = "12px";
       localTile.style.boxShadow    = "0 4px 24px rgba(0,0,0,.7)";
       localTile.style.border       = "2px solid rgba(255,255,255,.1)";
@@ -4936,10 +5037,10 @@ class WebRTCMeetingAPI {
       if (localTile.parentElement !== stage) stage.appendChild(localTile);
       localTile.style.position     = "fixed";
       localTile.style.bottom       = "96px";
-      localTile.style.right        = "16px";
+      localTile.style.right        = _pipRight;
       localTile.style.width        = "180px";
       localTile.style.height       = "120px";
-      localTile.style.zIndex       = "30";
+      localTile.style.zIndex       = "33";
       localTile.style.borderRadius = "12px";
       localTile.style.boxShadow    = "0 4px 24px rgba(0,0,0,.7)";
       localTile.style.border       = "2px solid rgba(255,255,255,.15)";
@@ -5211,15 +5312,8 @@ class WebRTCMeetingAPI {
           sessionStorage.removeItem("wrtc_force_cam_" + this.roomName);
           sessionStorage.removeItem("wrtc_admin_mic_" + this.roomName);
           sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
-          this.parentNode.innerHTML =
-            '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-            'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
-            '<div style="font-size:56px;">⏱️</div>' +
-            '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
-            '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;text-align:center;">This meeting has ended and cannot be rejoined.</p>' +
-            '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
-            'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>' +
-            '</div>';
+          try { window.__wrtcEndedByHost = true; } catch(_) {}
+          if (typeof this._onLeave === 'function') this._onLeave();
         }
         return;
       }
@@ -5505,6 +5599,29 @@ class WebRTCMeetingAPI {
         break;
       }
 
+      case "session-replaced":
+        this._isLeaving = true;
+        this._localStream?.getTracks().forEach(t => t.stop());
+        this._shareStream?.getTracks().forEach(t => t.stop());
+        this._localStream = null; this._shareStream = null;
+        this.parentNode.innerHTML =
+          '<div style="position:fixed;inset:0;background:#13151c;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;">' +
+          '<div style="background:#1e2028;border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:40px 44px;max-width:400px;width:100%;text-align:center;box-shadow:0 16px 48px rgba(0,0,0,.6);">' +
+          '<div style="width:56px;height:56px;background:rgba(251,188,4,.12);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;">' +
+          '<svg width="28" height="28" viewBox="0 0 24 24" fill="#fbbc04"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg></div>' +
+          '<h2 style="color:#e8eaed;font-size:20px;font-weight:600;margin:0 0 10px;">Moved to another tab</h2>' +
+          '<p style="color:#9aa0a6;font-size:14px;line-height:1.6;margin:0 0 28px;">You joined this meeting from another device or browser.<br>This tab is no longer active.</p>' +
+          '<button onclick="window.location.href=window.location.origin" style="background:#1a73e8;color:#fff;border:none;border-radius:10px;padding:12px 28px;font-size:14px;font-weight:500;cursor:pointer;width:100%;">Go home</button>' +
+          '</div></div>';
+        break;
+
+      case "plan-upgraded": {
+        const _newMin   = payload.newLimitMinutes;
+        const _limitTxt = _newMin == null ? "unlimited time" : `up to ${_newMin} minutes`;
+        this._toast(`Plan upgraded — this meeting now allows ${_limitTxt}.`);
+        break;
+      }
+
       case "meeting-ended":
         this._isLeaving = true;
         this._localStream?.getTracks().forEach(t => t.stop());
@@ -5512,6 +5629,7 @@ class WebRTCMeetingAPI {
         this._localStream = null;
         this._shareStream = null;
         try { localStorage.setItem("meeting_ended_" + this.roomName, "1"); } catch(_) {}
+        try { window.__wrtcEndedByHost = true; } catch(_) {}
         sessionStorage.removeItem("wrtc_name_" + this.roomName);
         sessionStorage.removeItem("meet_session_" + this.roomName);
         sessionStorage.removeItem("wrtc_mic_" + this.roomName);
@@ -5525,16 +5643,12 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
         sessionStorage.removeItem("wrtc_self_mic_" + this.roomName);
         sessionStorage.removeItem("wrtc_self_cam_" + this.roomName);
+        const _wasRecordingEnded = this._isRecording;
+        if (this._isRecording) this._stopRecording();
         this._ws?.close();
-        this.parentNode.innerHTML =
-          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-          'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">' +
-          '<div style="font-size:56px;">📴</div>' +
-          '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">Meeting ended</p>' +
-          '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;">The host has ended this meeting.</p>' +
-          '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;' +
-          'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>' +
-          '</div>';
+        if (typeof this._onLeave === 'function') {
+          setTimeout(() => this._onLeave('host-ended'), _wasRecordingEnded ? 1500 : 0);
+        }
         break;
 
       case "meeting_ended_plan_limit": {
@@ -5557,40 +5671,14 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem("wrtc_admin_cam_" + this.roomName);
         sessionStorage.removeItem("wrtc_self_mic_" + this.roomName);
         sessionStorage.removeItem("wrtc_self_cam_" + this.roomName);
+        try { window.__wrtcTimeLimitReached = true; } catch(_) {}
+        const _wasRecordingLimit = this._isRecording;
+        if (this._isRecording) this._stopRecording();
         this._ws?.close();
-        const _isHostEnd = this._isHost;
-        const _plan = payload.plan || "free";
-        const _upgradeUrl = window.location.origin + '/pricing';
-        const _hostMsg = payload.message || "Your meeting has ended — the time limit for your plan was reached.";
-        const _upgradeBtn = _isHostEnd
-          ? '<button onclick="window.location.href=\'' + _upgradeUrl + '\'" ' +
-            'style="padding:11px 28px;background:linear-gradient(135deg,#6c63ff,#5a52d5);color:#fff;' +
-            'border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;' +
-            'box-shadow:0 4px 14px rgba(108,99,255,.4);">⚡ Upgrade Plan</button>'
-          : '';
-        const _hostContent =
-          '<div style="background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:12px;' +
-          'padding:16px 24px;max-width:480px;text-align:center;">' +
-          '<p style="color:#fbbf24;font-size:14px;margin:0;line-height:1.6;">' + _hostMsg + '</p>' +
-          '</div>' +
-          '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">' +
-          '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
-          'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>' +
-          _upgradeBtn +
-          '</div>';
-        const _guestContent =
-          '<p style="color:rgba(255,255,255,.55);font-size:15px;margin:0;text-align:center;max-width:380px;line-height:1.6;">' +
-          'This meeting has ended. Please ask the host to upgrade their plan to continue.' +
-          '</p>' +
-          '<button onclick="history.back()" style="padding:11px 28px;background:transparent;color:#9aa0a6;' +
-          'border:1px solid rgba(255,255,255,.2);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Go Back</button>';
-        this.parentNode.innerHTML =
-          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-          'align-items:center;justify-content:center;gap:16px;font-family:sans-serif;padding:24px;">' +
-          '<div style="font-size:56px;">⏱️</div>' +
-          '<p style="color:#e8eaed;font-size:22px;font-weight:700;margin:0;text-align:center;">Meeting Time Limit Reached</p>' +
-          (_isHostEnd ? _hostContent : _guestContent) +
-          '</div>';
+        if (typeof this._onLeave === 'function') {
+          const _tlRole = this._isHost ? 'timelimit-host' : 'timelimit-guest';
+          setTimeout(() => this._onLeave(_tlRole), _wasRecordingLimit ? 1500 : 0);
+        }
         break;
       }
 
@@ -5663,10 +5751,7 @@ class WebRTCMeetingAPI {
             if (b) { b.textContent = n; b.classList.add("show"); }
           });
         }
-        // Host messages show as popup; guest messages show as regular toast
-        if (payload.isHostMsg) {
-          this._showMsgPopup(name, payload.text);
-        } else if (this._panelTab !== "chat") {
+        if (this._panelTab !== "chat") {
           this._toast(`${name}: ${payload.text.slice(0, 40)}${payload.text.length > 40 ? "…" : ""}`);
         }
         break;
@@ -6080,15 +6165,8 @@ class WebRTCMeetingAPI {
         sessionStorage.removeItem('wrtc_admin_cam_' + this.roomName);
         sessionStorage.removeItem('wrtc_self_mic_' + this.roomName);
         sessionStorage.removeItem('wrtc_self_cam_' + this.roomName);
-        this.parentNode.innerHTML =
-          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;'
-          + 'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">'
-          + '<div style="font-size:56px;">🚫</div>'
-          + '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">You were removed</p>'
-          + '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;">The host has removed you from this meeting.</p>'
-          + '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;'
-          + 'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>'
-          + '</div>';
+        try { window.__wrtcEndedByHost = true; } catch(_) {}
+        if (typeof this._onLeave === 'function') this._onLeave();
         break;
 
       // ── Knock-to-join: guest is waiting for host approval ──────────────────
@@ -6102,18 +6180,8 @@ class WebRTCMeetingAPI {
       }
 
       case "knock-denied": {
-        this.parentNode.innerHTML =
-          '<style>@keyframes wrtc-csp{to{transform:rotate(360deg)}}</style>' +
-          '<div style="position:fixed;inset:0;background:#202124;display:flex;flex-direction:column;' +
-          'align-items:center;justify-content:center;gap:20px;font-family:sans-serif;">' +
-          '<div style="font-size:56px;">🚫</div>' +
-          '<p style="color:#e8eaed;font-size:20px;font-weight:600;margin:0;">Request Rejected</p>' +
-          '<p style="color:rgba(255,255,255,.5);font-size:14px;margin:0;text-align:center;max-width:320px;">' +
-          (payload.reason || 'The admin has rejected your request to join this meeting.') + '</p>' +
-          '<button onclick="history.back()" style="padding:12px 32px;background:#1a73e8;color:#fff;' +
-          'border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;">Go Back</button>' +
-          '</div>';
         this._ws?.close();
+        if (typeof this._onLeave === 'function') this._onLeave();
         break;
       }
 
@@ -6522,6 +6590,7 @@ class WebRTCMeetingAPI {
     document.getElementById("wrtc-end-meeting-btn").addEventListener("click", () => {
       this._sendWS({ type: "end-meeting", payload: {} });
       overlay.remove();
+      try { window.__wrtcEndedByHost = true; } catch(_) {}
       this._doLeave();
     });
     document.getElementById("wrtc-cancel-leave-btn").addEventListener("click", () => overlay.remove());
@@ -6747,7 +6816,6 @@ class WebRTCMeetingAPI {
       'border-top:4px solid #ea4335;border-radius:50%;animation:wrtc-spin2 1s linear infinite;"></div>' +
       '<p style="color:#e8eaed;font-size:16px;font-weight:500;margin:0;">Leaving…</p>' +
       '</div>';
-    sessionStorage.removeItem('wrtc_name_' + this.roomName);
     sessionStorage.removeItem('wrtc_mic_' + this.roomName);
     sessionStorage.removeItem('wrtc_cam_' + this.roomName);
     sessionStorage.removeItem('wrtc_start_' + this.roomName);

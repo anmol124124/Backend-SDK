@@ -336,7 +336,7 @@ async def project_analytics(
     counts_result = await db.execute(
         select(
             ProjectMeetingParticipant.room_name,
-            func.count().label("cnt"),
+            func.count(func.distinct(ProjectMeetingParticipant.user_id)).label("cnt"),
             func.min(ProjectMeetingParticipant.joined_at).label("first_join"),
         )
         .where(ProjectMeetingParticipant.room_name.in_(room_names))

@@ -69,11 +69,11 @@ PUBLIC_MEETING_PARTICIPANT_LIMITS: dict[str | None, int | None] = {
 
 # Public-meet time limits per host plan (minutes; None = unlimited)
 PUBLIC_MEETING_TIME_LIMITS: dict[str | None, int | None] = {
-    None:        5,    # free/starter  → 5 minutes
-    "free":      5,
-    "basic":     10,   # basic         → 10 minutes
-    "pro":       None, # pro           → unlimited
-    "premium":   None,
+    None:         5,    # free          → 5 minutes
+    "free":       5,
+    "basic":      10,   # basic         → 10 minutes
+    "pro":        15,   # pro           → 15 minutes
+    "premium":    None, # enterprise    → unlimited
     "enterprise": None,
 }
 

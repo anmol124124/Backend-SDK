@@ -1,3 +1,6 @@
+import time
+from datetime import datetime, timedelta, timezone
+
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -9,9 +12,46 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.modules.auth.models import User
 
+# Testing: 10 minutes. Change to 30 * 24 * 60 for production (1 month).
+PLAN_EXPIRY_MINUTES = 30 * 24 * 60  # 30 days
+
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
+
+async def _apply_plan_to_active_meetings(user_id_str: str, new_plan: str) -> None:
+    """If the user is currently hosting any public meetings, update their time limits."""
+    from app.modules.meeting.connection_manager import manager
+    from app.modules.project.mau import PUBLIC_MEETING_TIME_LIMITS
+
+    rooms = manager.get_rooms_hosted_by(user_id_str)
+    for room_id in rooms:
+        if not manager.is_public_room(room_id):
+            continue
+
+        new_limit_min = PUBLIC_MEETING_TIME_LIMITS.get(new_plan)  # None = unlimited
+
+        if new_limit_min is None:
+            # Upgraded to unlimited — cancel any running timer
+            manager.cancel_time_limit(room_id)
+        else:
+            started_at = manager.get_meeting_started_at(room_id)
+            if started_at:
+                elapsed_sec = (time.time() * 1000 - started_at) / 1000
+                remaining_sec = new_limit_min * 60 - elapsed_sec
+                if remaining_sec > 60:
+                    manager.update_time_limit(room_id, int(remaining_sec))
+                # If remaining <= 60s the old timer will fire shortly — don't restart
+
+        await manager.broadcast_to_room(room_id, {
+            "type": "plan-upgraded",
+            "from": "server",
+            "payload": {
+                "plan": new_plan,
+                "newLimitMinutes": new_limit_min,
+            },
+        })
 
 PLAN_PRICES = {
     "free":       0,   # $0 / forever
@@ -40,6 +80,7 @@ class CheckoutResponse(BaseModel):
 class PlanResponse(BaseModel):
     plan: str
     email: str
+    plan_expires_at: datetime | None = None
 
 
 @router.post(
@@ -106,8 +147,13 @@ async def activate_plan(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
     user.plan = plan
+    user.plan_expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=PLAN_EXPIRY_MINUTES)
+        if plan != "free" else None
+    )
     await db.commit()
-    return PlanResponse(plan=plan, email=user.email)
+    await _apply_plan_to_active_meetings(str(user.id), plan)
+    return PlanResponse(plan=plan, email=user.email, plan_expires_at=user.plan_expires_at)
 
 
 @router.get(
@@ -141,6 +187,10 @@ async def verify_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     user.plan = plan
+    user.plan_expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=PLAN_EXPIRY_MINUTES)
+        if plan != "free" else None
+    )
     await db.commit()
-
-    return PlanResponse(plan=plan, email=user.email)
+    await _apply_plan_to_active_meetings(str(user.id), plan)
+    return PlanResponse(plan=plan, email=user.email, plan_expires_at=user.plan_expires_at)

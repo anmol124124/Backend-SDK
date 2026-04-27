@@ -40,6 +40,7 @@ class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     plan: str | None = None
+    plan_expires_at: datetime | None = None
     created_at: datetime
 
     model_config = {
