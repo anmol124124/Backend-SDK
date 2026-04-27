@@ -224,16 +224,29 @@ async def _record_public_participant_leave(room_code: str, participant_id) -> No
 
 
 async def _deactivate_public_meeting(room_code: str) -> None:
-    """Mark a public meeting as inactive so refresh/rejoin is blocked."""
+    """Mark a public meeting as inactive and close all open participant records."""
+    from datetime import datetime, timezone
+    from app.modules.public_meeting.models import PublicMeetingParticipant as _PMP2
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
+            now = datetime.now(timezone.utc)
+            # Close any participant records still open (left_at not set)
+            open_parts = (await db.execute(
+                select(_PMP2).where(
+                    _PMP2.room_code == room_code,
+                    _PMP2.left_at.is_(None),
+                )
+            )).scalars().all()
+            for p in open_parts:
+                p.left_at = now
+                p.duration_seconds = max(0, int((now - p.joined_at).total_seconds()))
+
+            pm = (await db.execute(
                 select(PublicMeeting).where(PublicMeeting.room_code == room_code)
-            )
-            pm = result.scalar_one_or_none()
+            )).scalar_one_or_none()
             if pm and pm.is_active:
                 pm.is_active = False
-                await db.commit()
+            await db.commit()
     except Exception as exc:
         logger.warning("Failed to deactivate public meeting  room=%s  error=%s", room_code, exc)
 
@@ -916,21 +929,48 @@ async def signaling_endpoint(
     if _is_public_meeting:
         import uuid as _uuid2
         from app.modules.public_meeting.models import PublicMeetingParticipant as _PMP
-        from datetime import datetime as _dt2, timezone as _tz2
+        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
         _pub_role = "host" if token_type == "public_host" else "guest"
         _pub_name = guest_name or getattr(user, "email", str(user.id))
-        _pub_participant_id = _uuid2.uuid4()
         try:
             async with AsyncSessionLocal() as _pdb:
-                _pmp = _PMP(
-                    id=_pub_participant_id,
-                    room_code=room_id,
-                    display_name=_pub_name,
-                    role=_pub_role,
-                    joined_at=_dt2.now(_tz2.utc),
-                )
-                _pdb.add(_pmp)
-                await _pdb.commit()
+                now2 = _dt2.now(_tz2.utc)
+                # Guard: already has an open session → reuse its ID (no new row)
+                _open = (await _pdb.execute(
+                    select(_PMP).where(
+                        _PMP.room_code == room_id,
+                        _PMP.display_name == _pub_name,
+                        _PMP.role == _pub_role,
+                        _PMP.left_at.is_(None),
+                    )
+                )).scalars().first()
+                if _open:
+                    _pub_participant_id = _open.id
+                else:
+                    # Reconnect within 30s → reopen existing record
+                    _recent = (await _pdb.execute(
+                        select(_PMP).where(
+                            _PMP.room_code == room_id,
+                            _PMP.display_name == _pub_name,
+                            _PMP.role == _pub_role,
+                            _PMP.left_at >= now2 - _td2(seconds=30),
+                        ).order_by(_PMP.joined_at.desc())
+                    )).scalars().first()
+                    if _recent:
+                        _recent.left_at = None
+                        _recent.duration_seconds = None
+                        await _pdb.commit()
+                        _pub_participant_id = _recent.id
+                    else:
+                        _pub_participant_id = _uuid2.uuid4()
+                        _pdb.add(_PMP(
+                            id=_pub_participant_id,
+                            room_code=room_id,
+                            display_name=_pub_name,
+                            role=_pub_role,
+                            joined_at=now2,
+                        ))
+                        await _pdb.commit()
         except Exception as _e:
             logger.warning("Failed to record public participant join  room=%s  error=%s", room_id, _e)
             _pub_participant_id = None

@@ -152,6 +152,8 @@ class MeetingSummaryResponse(BaseModel):
     is_active: bool
     created_at: _dt_mod.datetime | None
     scheduled_at: _dt_mod.datetime | None
+    ended_at: _dt_mod.datetime | None
+    unique_participant_count: int
     participants: list[PublicParticipantItem]
 
 
@@ -172,11 +174,21 @@ async def get_meeting_summary(
     if not mtg:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
+    from sqlalchemy import func as _func
     parts = (await db.execute(
         _sel(PublicMeetingParticipant)
         .where(PublicMeetingParticipant.room_code == room_code)
         .order_by(PublicMeetingParticipant.joined_at.asc())
     )).scalars().all()
+
+    # Unique participants by distinct display_name (re-joins share the same name)
+    unique_count = len({p.display_name for p in parts})
+
+    # Meeting ended_at: latest left_at among all closed participant records
+    ended_at = None
+    if not mtg.is_active:
+        closed = [p.left_at for p in parts if p.left_at is not None]
+        ended_at = max(closed) if closed else None
 
     return MeetingSummaryResponse(
         room_code=mtg.room_code,
@@ -184,6 +196,8 @@ async def get_meeting_summary(
         is_active=mtg.is_active,
         created_at=mtg.created_at,
         scheduled_at=mtg.scheduled_at,
+        ended_at=ended_at,
+        unique_participant_count=unique_count,
         participants=parts,
     )
 
