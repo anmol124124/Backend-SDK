@@ -65,6 +65,10 @@ class ConnectionManager:
         self._all_cams_muted: dict[str, bool] = {}
         # raised hands — base_user_id set per room; cleared when user lowers hand or leaves
         self._raised_hands: dict[str, set[str]] = defaultdict(set)
+        # approved-but-not-yet-connected guest slots per room.
+        # Incremented when host approves, decremented when guest connects or fails.
+        # Used by the limit check so bulk-admits don't bypass the plan cap.
+        self._reserved_slots: dict[str, int] = defaultdict(int)
 
     # ── Connection lifecycle ───────────────────────────────────────────────────
 
@@ -126,6 +130,22 @@ class ConnectionManager:
 
     def get_pending_ids(self, meeting_id: str) -> list[str]:
         return list(self._pending.get(meeting_id, {}).keys())
+
+    # ── Reserved-slot accounting (bulk-admit race-condition guard) ────────────
+
+    def reserve_slot(self, meeting_id: str) -> None:
+        """Mark one slot as spoken-for (approved but guest not yet connected)."""
+        self._reserved_slots[meeting_id] += 1
+        logger.debug("Slot reserved  meeting=%s  reserved=%d", meeting_id, self._reserved_slots[meeting_id])
+
+    def release_slot(self, meeting_id: str) -> None:
+        """Release a reserved slot (guest connected or approval failed)."""
+        if self._reserved_slots.get(meeting_id, 0) > 0:
+            self._reserved_slots[meeting_id] -= 1
+        logger.debug("Slot released  meeting=%s  reserved=%d", meeting_id, self._reserved_slots.get(meeting_id, 0))
+
+    def reserved_slots(self, meeting_id: str) -> int:
+        return self._reserved_slots.get(meeting_id, 0)
 
     def mark_admitted(self, meeting_id: str, base_user_id: str) -> None:
         """Record that a guest was admitted. Enables reconnect=1 bypass on refresh."""

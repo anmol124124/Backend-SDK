@@ -555,11 +555,12 @@ async def signaling_endpoint(
     is_any_host  = is_embed_host or (token_type == "public_host")
 
     def _non_host_count() -> int:
-        """Current non-host participant count connected to the room."""
+        """Connected non-host count + approved-but-not-yet-connected (reserved) slots."""
         size = manager.room_size(room_id)
         hid  = manager.get_host(room_id)
         host_in_room = 1 if (hid and manager.is_connected(room_id, hid)) else 0
-        return max(0, size - host_in_room)
+        connected = max(0, size - host_in_room)
+        return connected + manager.reserved_slots(room_id)
 
     # Always fetch plan info so p_limit is available in the host's message loop
     # for the knock-approve race-condition guard (pending guests are invisible to
@@ -848,7 +849,7 @@ async def signaling_endpoint(
             approval_task.cancel()
 
         if not done:
-            # 10-minute timeout — no host decision
+            # 10-minute timeout — no host decision (slot was never reserved since no approval)
             logger.warning("Knock timed out  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
             manager.remove_pending(room_id, user_id)
             try:
@@ -888,6 +889,8 @@ async def signaling_endpoint(
             return
 
         logger.info("Knock approved  room=%s  guest=%s  name=%s", room_id, user_id, guest_name)
+        # Release the reserved slot — guest is now connecting and will appear in room_size
+        manager.release_slot(room_id)
         # Record admission so future reconnect=1 from this guest is allowed
         manager.mark_admitted(room_id, base_user_id)
         # Approved — add to active room
@@ -1244,6 +1247,10 @@ async def signaling_endpoint(
                                         logger.debug("Could not close full-room pending WebSocket  %s", e)
                                 manager.resolve_pending(room_id, guest_id, False)
                                 continue
+                        # Reserve a slot immediately so the next bulk-approve sees
+                        # an accurate count even before this guest has connected.
+                        if approved:
+                            manager.reserve_slot(room_id)
                         manager.resolve_pending(room_id, guest_id, approved)
                         logger.info(
                             "Knock resolved  room=%s  guest=%s  approved=%s  by=%s",
