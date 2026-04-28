@@ -129,6 +129,54 @@ async def list_public_recordings(
     return result.scalars().all()
 
 
+@router.get("/recordings/{recording_id}/download", tags=["Public Recordings"])
+async def download_public_recording(
+    recording_id: _uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy-download a recording so the browser always gets Content-Disposition:attachment."""
+    import httpx
+    from fastapi.responses import StreamingResponse, Response
+
+    rec = (await db.execute(
+        _select(PublicRecording).where(
+            PublicRecording.id == recording_id,
+            PublicRecording.user_id == current_user.id,
+        )
+    )).scalar_one_or_none()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    filename = rec.filename or "recording.webm"
+    disposition = f'attachment; filename="{filename}"'
+
+    # Local file stored on disk
+    if rec.url.startswith("/"):
+        local_path = pathlib.Path("/app") / rec.url.lstrip("/")
+        if not local_path.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+        data = local_path.read_bytes()
+        return Response(
+            content=data,
+            media_type="video/webm",
+            headers={"Content-Disposition": disposition},
+        )
+
+    # Remote URL (GCS or other) — proxy through backend
+    async def stream_remote():
+        async with httpx.AsyncClient(timeout=60) as client:
+            async with client.stream("GET", rec.url) as resp:
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    yield chunk
+
+    return StreamingResponse(
+        stream_remote(),
+        media_type="video/webm",
+        headers={"Content-Disposition": disposition},
+    )
+
+
 # ── Meeting Summary (participants) ────────────────────────────────────────────
 
 import datetime as _dt_mod
